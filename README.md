@@ -157,7 +157,7 @@ Everything below was run in this workspace:
 | Check | Result |
 |---|---|
 | `npm run verify` | green — typecheck, canon gate, 161 tests |
-| Canon gate | 48 files, 18,600+ lines, 11 prohibitions, 8 required locks |
+| Canon gate | 48 files, 18,606 lines, 11 prohibitions, 8 required locks |
 | `npx vitest run` | 161 passed across 15 files |
 | `npm run build` | 2.40 kB html · 234.06 kB js · 484.12 kB three chunk · 21.41 kB css |
 | Production preview | every route HTTP 200, hashed assets as `text/javascript` |
