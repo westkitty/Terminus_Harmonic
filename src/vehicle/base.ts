@@ -21,7 +21,7 @@ import * as THREE from 'three';
 import type { Entity, World } from '../core/ecs';
 import type { InputManager } from '../core/input';
 import type { SectorField, TunnelLattice } from '../sector/field';
-import type { VehicleKind } from '../state/world';
+import { DOMAINS, type Domain, type VehicleKind } from '../state/world';
 import type { PlanetaryState } from '../state/planetary';
 
 export interface Gauge {
@@ -79,7 +79,16 @@ export interface VehicleEnvironment {
   /** Quality-driven particle scale 0..2. */
   particleScale: number;
   reducedMotion: boolean;
+  /** Campaign-unlocked engineering modules. */
+  unlockedModules?: readonly string[];
 }
+
+const VEHICLE_DOMAIN: Record<VehicleKind, Domain> = {
+  ORBITAL_SKIFF: 'ORBIT',
+  LAND_TRAIN: 'SURFACE',
+  STRATA_CRAWLER: 'SUBSURFACE',
+  GLIDER: 'SKY',
+};
 
 export type CameraMode = 'CHASE' | 'COCKPIT' | 'INSPECT' | 'ORBIT';
 
@@ -127,6 +136,20 @@ export abstract class VehicleBase {
   /** Rebind the vehicle to a freshly constructed sector environment. */
   setEnvironment(env: VehicleEnvironment): void {
     this.env = env;
+  }
+
+  /** True when the campaign has unlocked the named engineering module. */
+  hasModule(name: string): boolean {
+    return Boolean(this.env.unlockedModules?.includes(name));
+  }
+
+  /** Unlocked modules installed on this specific machine class. */
+  activeModules(): string[] {
+    const unlocked = this.env.unlockedModules;
+    if (!unlocked || unlocked.length === 0) return [];
+    const dom = DOMAINS.find((d) => d.id === VEHICLE_DOMAIN[this.kind]);
+    if (!dom) return [];
+    return dom.unlocks.map((u) => u.module).filter((m) => unlocked.includes(m));
   }
 
   /** Authoritative world-space position of the vehicle for streaming and camera tracking. */

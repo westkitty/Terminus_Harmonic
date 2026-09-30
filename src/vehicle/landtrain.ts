@@ -301,7 +301,8 @@ export class LandTrain extends VehicleBase {
     const aheadY = field.elevation(pos.x + Math.sin(heading) * ahead, pos.z + Math.cos(heading) * ahead);
     this.currentSlope = Math.atan2(aheadY - groundY, ahead);
     this.materialName = field.materialLabel;
-    const cap = field.material.bearingCapacity * 1000;
+    const graderBoost = this.hasModule('Route Grader') ? 1.28 : 1;
+    const cap = field.material.bearingCapacity * 1000 * graderBoost;
     this.localBearingCapacity = cap;
     this.groundBearing = (this.totalMass * G) / this.contactArea;
 
@@ -310,6 +311,7 @@ export class LandTrain extends VehicleBase {
       const b = field.bearing(pos.x + Math.sin(heading) * d, pos.z + Math.cos(heading) * d);
       if (b < worstBearing) worstBearing = b;
     }
+    if (this.hasModule('Route Grader')) worstBearing = clamp01(worstBearing + 0.16);
     const pressureRatio = this.groundBearing / Math.max(1, cap);
     this.predictedFailure = clamp01(smoothstep(0.55, 1.25, pressureRatio) * 0.7 + (1 - worstBearing) * 0.3);
 
@@ -317,7 +319,7 @@ export class LandTrain extends VehicleBase {
     const steerIn = clamp(input.axis.x, -1, 1);
     const braking = input.held('brake');
 
-    const mu = field.material.friction;
+    const mu = field.material.friction * (this.hasModule('Bogie Load Balancer') ? 1.2 : 1);
     const drivenLoad = this.bogies.reduce((s, b) => s + (b.driven ? b.load : 0), 0);
     const tractionLimit = mu * drivenLoad * Math.cos(this.currentSlope);
     const gradeForce = this.totalMass * G * Math.sin(this.currentSlope);
@@ -521,9 +523,10 @@ export class LandTrain extends VehicleBase {
   interact(): void {
     const pos = this.segments[0].position;
     const y = this.env.field.elevation(pos.x, pos.z) + 2;
+    const radiusScale = this.hasModule('Depot Link') ? 1.35 : 1;
     for (const z of this.zones) {
       const d = Math.hypot(pos.x - z.position.x, pos.z - z.position.z);
-      if (d > z.radius || Math.abs(this.speedAlong) > 1.2) continue;
+      if (d > z.radius * radiusScale || Math.abs(this.speedAlong) > 1.2) continue;
       if (z.kind === 'PICKUP') {
         if (this.cargoModules >= this.cargoCapacity) {
           this.env.blip(pos.x, y, pos.z, 180, 0.1);
@@ -588,6 +591,7 @@ export class LandTrain extends VehicleBase {
         { label: 'Wheel Slip', on: this.slip > 0.05 },
         { label: 'Brake Fade', on: this.brakeTemp > 0.6 },
         { label: `Cargo ${this.cargoModules}/${this.cargoCapacity}`, on: this.cargoModules > 0 },
+        ...this.activeModules().map((m) => ({ label: `MOD · ${m}`, on: true })),
       ],
       readout: `Surface Crr ${field_crr(this.env)} · mu ${field_mu(this.env)} · braking distance ${brakingDist.toFixed(0)} m · ${this.materialName}`,
       objectives: [],

@@ -21,18 +21,33 @@ import {
 import {
   PLANETARY_VARS,
   PlanetaryState,
+  couplingRules,
   varLabel,
   varSense,
   varUnit,
   type PlanetaryVar,
 } from '../state/planetary';
-import { ACOUSTIC_SPIRES, DOMAIN_LABEL, type CrisisNodeDef } from '../state/world';
+import {
+  ACOUSTIC_SPIRES,
+  ARCHIVAL_REFERENCES,
+  BIOME_LABEL,
+  CANON_FACTS,
+  DOMAINS,
+  DOMAIN_LABEL,
+  GAME_LOCAL_INVENTIONS,
+  MATERIALS,
+  type BiomeId,
+  type CrisisNodeDef,
+} from '../state/world';
+import { VEHICLE_SPECS, domainBadgeSvg, vehicleBlueprintSvg } from './schematics';
 import type { CrisisRuntime } from '../game/crisis';
 import type { HudModel } from '../vehicle/base';
-import { ACTION_LABELS, type ActionName } from '../core/input';
+import { ACTION_LABELS, DEFAULT_BINDINGS, type ActionName } from '../core/input';
 import type { SettingsRecord, SpireRecord } from '../state/save';
 import type { QualityTier } from '../core/perf';
 import type { SettlementRuntime } from '../systems/systems';
+
+export type CodexTab = 'DOMAINS' | 'BLUEPRINTS' | 'PROVENANCE' | 'LOG';
 
 export interface BriefingData {
   node: CrisisNodeDef;
@@ -41,6 +56,8 @@ export interface BriefingData {
   forecast: { vars: Record<PlanetaryVar, number>; chain: string[] };
   canStart: boolean;
   lockReason?: string;
+  unlockedModules?: string[];
+  domainPoints?: Record<string, number>;
 }
 
 export interface UIDependencies {
@@ -53,6 +70,7 @@ export interface UIDependencies {
   onAscend: () => void;
   onSettingsChange: (patch: Partial<SettingsRecord>) => void;
   onRebind: (action: ActionName, code: string) => void;
+  onResetBindings?: () => void;
   onSave: () => void;
   onLoad: () => void;
   onExport: () => void;
@@ -60,6 +78,7 @@ export interface UIDependencies {
   onNewWorld: () => void;
   onCycleCamera: () => void;
   onPingSpire?: (spireId: number) => void;
+  onSelectSettlement?: (settlementId: string) => void;
 }
 
 type Listener = () => void;
@@ -90,6 +109,14 @@ export class UIController {
   private briefingNodeId: string | null = null;
   private selectedNodeId: string | null = null;
   private selectedSpireId = 0;
+  private selectedSettlementId: string | null = null;
+  private selectedPlanetaryVar: PlanetaryVar | null = 'harmonicCoherence';
+  private codexTab: CodexTab = 'DOMAINS';
+  private codexData: {
+    domainPoints: Record<string, number>;
+    unlockedModules: string[];
+    log: { t: number; text: string }[];
+  } = { domainPoints: {}, unlockedModules: [], log: [] };
   private rebindingAction: ActionName | null = null;
 
   /** Update the planetary state reference when a new world or save is loaded. */
@@ -155,6 +182,7 @@ export class UIController {
               <span id="sim-time">t+0</span>
             </div>
             <div class="var-grid" id="var-grid"></div>
+            <div class="var-inspector" id="var-inspector" aria-live="polite"></div>
           </div>
         </div>
         <div class="macro-block">
@@ -218,6 +246,7 @@ export class UIController {
     this.el.instability = macro.querySelector('#instability') as HTMLElement;
     this.el.simTime = macro.querySelector('#sim-time') as HTMLElement;
     this.el.varGrid = macro.querySelector('#var-grid') as HTMLElement;
+    this.el.varInspector = macro.querySelector('#var-inspector') as HTMLElement;
     this.el.overlaySelector = macro.querySelector('#overlay-selector') as HTMLElement;
     this.el.overlayLegend = macro.querySelector('#overlay-legend') as HTMLElement;
     this.el.crisisItems = macro.querySelector('#crisis-items') as HTMLElement;
@@ -242,22 +271,37 @@ export class UIController {
     this.el.reticleAction = macro.querySelector('#reticle-action') as HTMLButtonElement;
 
     // Overlay buttons.
-    for (const mode of OVERLAY_MODES) {
+    OVERLAY_MODES.forEach((mode, idx) => {
       const b = document.createElement('button');
       b.className = 'overlay-btn';
       b.textContent = OVERLAY_LABEL[mode];
+      b.title = `${OVERLAY_LABEL[mode]} [Key ${idx + 1}]`;
       b.setAttribute('aria-pressed', String(mode === this.overlay));
       b.dataset.mode = mode;
+      b.dataset.shortcut = String(idx + 1);
       b.addEventListener('click', () => this.setOverlay(mode));
       this.el.overlaySelector.appendChild(b);
-    }
+    });
 
     // Variable rows.
     for (const v of PLANETARY_VARS) {
       const row = document.createElement('div');
       row.className = 'var-row';
-      row.title = `${varLabel(v)} (${varUnit(v)})`;
+      row.dataset.var = v;
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-pressed', String(v === this.selectedPlanetaryVar));
+      row.title = `Inspect causal couplings for ${varLabel(v)} (${varUnit(v)})`;
       row.innerHTML = `<span class="name">${varLabel(v)}</span><span class="tick"><i></i></span><span class="val">--</span>`;
+      row.addEventListener('click', () => {
+        this.selectPlanetaryVar(this.selectedPlanetaryVar === v ? null : v);
+      });
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.selectPlanetaryVar(this.selectedPlanetaryVar === v ? null : v);
+        }
+      });
       this.el.varGrid.appendChild(row);
       this.varEls.set(v, {
         row,
@@ -279,6 +323,7 @@ export class UIController {
           <div id="sector-bar">
             <span class="sector-cam-badge" id="hud-cam-mode">CAM · CHASE</span>
             <button class="btn" id="hud-cam-btn" type="button" title="Cycle Camera [V]">Camera [V]</button>
+            <button class="btn" id="hud-codex-btn" type="button" title="Open Survey Archive &amp; Codex [C]">Archive [C]</button>
             <button class="btn" id="hud-ascend-btn" type="button" title="Return to Command Lattice [ESC]">Lattice [ESC]</button>
             <button class="btn" id="hud-settings-btn" type="button" title="Open Configuration">Config</button>
           </div>
@@ -310,6 +355,7 @@ export class UIController {
     this.el.objCount = hud.querySelector('#obj-count') as HTMLElement;
     this.el.hudCamMode = hud.querySelector('#hud-cam-mode') as HTMLElement;
     this.el.hudCamBtn = hud.querySelector('#hud-cam-btn') as HTMLButtonElement;
+    this.el.hudCodexBtn = hud.querySelector('#hud-codex-btn') as HTMLButtonElement;
     this.el.hudAscendBtn = hud.querySelector('#hud-ascend-btn') as HTMLButtonElement;
     this.el.hudSettingsBtn = hud.querySelector('#hud-settings-btn') as HTMLButtonElement;
     this.el.hudControls = hud.querySelector('#hud-controls') as HTMLElement;
@@ -332,6 +378,7 @@ export class UIController {
         <div class="body">
           <div id="briefing-lock-reason" role="status"></div>
           <p class="brief" id="briefing-brief"></p>
+          <div class="briefing-blueprint" id="briefing-blueprint"></div>
           <h3>Engineering Objectives</h3>
           <ul class="obj-list" id="briefing-objectives"></ul>
           <h3>Predicted Planetary Consequences</h3>
@@ -351,12 +398,43 @@ export class UIController {
     this.el.briefDomain = brief.querySelector('#briefing-domain') as HTMLElement;
     this.el.briefLockReason = brief.querySelector('#briefing-lock-reason') as HTMLElement;
     this.el.briefBrief = brief.querySelector('#briefing-brief') as HTMLElement;
+    this.el.briefBlueprint = brief.querySelector('#briefing-blueprint') as HTMLElement;
     this.el.briefObjectives = brief.querySelector('#briefing-objectives') as HTMLElement;
     this.el.briefForecast = brief.querySelector('#briefing-forecast') as HTMLElement;
     this.el.briefArchive = brief.querySelector('#briefing-archive') as HTMLElement;
     this.el.briefDescend = brief.querySelector('#briefing-descend') as HTMLButtonElement;
     this.el.briefAbort = brief.querySelector('#briefing-abort') as HTMLButtonElement;
     this.el.briefClose = brief.querySelector('#briefing-close') as HTMLButtonElement;
+
+    // --- survey archive & engineering codex modal ---
+    const codex = document.createElement('div');
+    codex.id = 'codex';
+    codex.setAttribute('role', 'dialog');
+    codex.setAttribute('aria-modal', 'true');
+    codex.setAttribute('aria-labelledby', 'codex-title');
+    codex.innerHTML = `
+      <div class="codex-card">
+        <header>
+          <div>
+            <h2 id="codex-title">Survey Archive &amp; Engineering Codex</h2>
+            <div class="domain">0-ARK Field Manual · Provenance &amp; Subsystem Registry</div>
+          </div>
+          <button class="btn" id="codex-close" type="button">Close</button>
+        </header>
+        <div class="codex-tabs" id="codex-tabs" role="tablist">
+          <button class="codex-tab" role="tab" data-tab="DOMAINS" aria-selected="true" type="button">Domains &amp; Modules</button>
+          <button class="codex-tab" role="tab" data-tab="BLUEPRINTS" aria-selected="false" type="button">Blueprints &amp; Biomes</button>
+          <button class="codex-tab" role="tab" data-tab="PROVENANCE" aria-selected="false" type="button">Archival Provenance</button>
+          <button class="codex-tab" role="tab" data-tab="LOG" aria-selected="false" type="button">Engineering Log</button>
+        </div>
+        <div class="codex-body" id="codex-body"></div>
+      </div>
+    `;
+    root.appendChild(codex);
+    this.el.codex = codex;
+    this.el.codexTabs = codex.querySelector('#codex-tabs') as HTMLElement;
+    this.el.codexBody = codex.querySelector('#codex-body') as HTMLElement;
+    this.el.codexClose = codex.querySelector('#codex-close') as HTMLButtonElement;
 
     // --- settings modal ---
     const settings = document.createElement('div');
@@ -426,6 +504,7 @@ export class UIController {
     this.el.harmonicBanner = banner;
 
     this.buildSettings();
+    this.selectPlanetaryVar(this.selectedPlanetaryVar);
   }
 
   private buildSettings(): void {
@@ -570,6 +649,28 @@ export class UIController {
       row.append(lbl, keys, btn);
       gControls.appendChild(row);
     }
+
+    const resetRow = document.createElement('div');
+    resetRow.style.marginTop = '8px';
+    resetRow.style.display = 'flex';
+    resetRow.style.justifyContent = 'flex-end';
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'btn';
+    resetBtn.id = 'settings-reset-binds';
+    resetBtn.type = 'button';
+    resetBtn.textContent = 'Reset Controls to Default';
+    resetBtn.addEventListener('click', () => {
+      const defaults: Record<string, string[]> = {};
+      for (const k of Object.keys(DEFAULT_BINDINGS) as ActionName[]) {
+        defaults[k] = [...DEFAULT_BINDINGS[k]];
+      }
+      this.settings = { ...this.settings, bindings: defaults };
+      this.deps.onResetBindings?.();
+      this.deps.onSettingsChange({ bindings: defaults });
+      this.buildSettings();
+    });
+    resetRow.appendChild(resetBtn);
+    gControls.appendChild(resetRow);
   }
 
   private row(label: string, control: HTMLElement): HTMLElement {
@@ -619,9 +720,18 @@ export class UIController {
     const backdrop = (e: MouseEvent): void => {
       if (e.target === this.el.briefing) this.closeBriefing();
       if (e.target === this.el.settings) this.closeSettings();
+      if (e.target === this.el.codex) this.closeCodex();
     };
     this.el.briefing.addEventListener('click', backdrop);
     this.el.settings.addEventListener('click', backdrop);
+    this.el.codex.addEventListener('click', backdrop);
+    this.el.codexClose.addEventListener('click', () => this.closeCodex());
+    for (const tabBtn of this.el.codexTabs.querySelectorAll<HTMLButtonElement>('.codex-tab')) {
+      tabBtn.addEventListener('click', () => {
+        const tab = (tabBtn.dataset.tab as CodexTab) ?? 'DOMAINS';
+        this.openCodex(tab);
+      });
+    }
 
     const d = this.deps;
     this.disposers.push(d.bus.on(Events.Toast, (p) => this.toast(p?.message as string, p?.kind as string)));
@@ -640,14 +750,16 @@ export class UIController {
     this.disposers.push(d.bus.on(Events.SaveLoaded, () => this.toast('Campaign restored', 'good')));
 
     // Toolbar buttons in the macro toolbar.
-    const mk = (label: string, fn: () => void, primary = false): HTMLButtonElement => {
+    const mk = (label: string, fn: () => void, primary = false, id?: string): HTMLButtonElement => {
       const b = document.createElement('button');
       b.className = `btn${primary ? ' primary' : ''}`;
+      if (id) b.id = id;
       b.textContent = label;
       b.addEventListener('click', fn);
       return b;
     };
     this.el.macroToolbar.append(
+      mk('Archive [C]', () => this.openCodex(), false, 'macro-codex-btn'),
       mk('Settings', () => this.openSettings()),
       mk('Camera', () => d.onCycleCamera()),
       mk('Save', () => d.onSave()),
@@ -656,6 +768,7 @@ export class UIController {
 
     // Sector HUD command bar + spire ping wiring.
     this.el.hudCamBtn?.addEventListener('click', () => d.onCycleCamera());
+    this.el.hudCodexBtn?.addEventListener('click', () => this.openCodex());
     this.el.hudAscendBtn?.addEventListener('click', () => d.onAscend());
     this.el.hudSettingsBtn?.addEventListener('click', () => this.openSettings());
     this.el.spirePingBtn?.addEventListener('click', () => {
@@ -664,8 +777,10 @@ export class UIController {
     this.el.reticleAction?.addEventListener('click', () => {
       const nodeId = this.el.reticleAction.dataset.nodeId;
       const spireId = this.el.reticleAction.dataset.spireId;
+      const settlementId = this.el.reticleAction.dataset.settlementId;
       if (nodeId) d.onSelectNode(nodeId);
       else if (spireId !== undefined) d.onPingSpire?.(Number(spireId));
+      else if (settlementId) d.onSelectSettlement?.(settlementId);
     });
 
     const close = this.el.settings.querySelector('#settings-close') as HTMLButtonElement;
@@ -844,6 +959,104 @@ export class UIController {
       const worse = varSense(v) === 'bad' ? dev > 0.06 : dev < -0.06;
       e.row.classList.toggle('warn', bad && !worse);
       e.row.classList.toggle('crit', bad && worse);
+    }
+
+    if (this.selectedPlanetaryVar && this.el.varInspectorVal) {
+      const sv = this.selectedPlanetaryVar;
+      const txt = PlanetaryState.readout(sv, planetary.vars[sv]);
+      if (this.el.varInspectorVal.textContent !== txt) {
+        this.el.varInspectorVal.textContent = txt;
+      }
+    }
+  }
+
+  /** Select or clear the inspected planetary variable in the Causal Coupling Inspector. */
+  selectPlanetaryVar(v: PlanetaryVar | null): void {
+    this.selectedPlanetaryVar = v;
+    const rules = couplingRules();
+    const drivers = new Set<PlanetaryVar>();
+    const driven = new Set<PlanetaryVar>();
+    if (v) {
+      for (const r of rules) {
+        if (r.to === v) drivers.add(r.from);
+        if (r.from === v) driven.add(r.to);
+      }
+    }
+    for (const [k, el] of this.varEls) {
+      const isSel = k === v;
+      el.row.classList.toggle('is-selected', isSel);
+      el.row.classList.toggle('is-driver', !isSel && drivers.has(k));
+      el.row.classList.toggle('is-driven', !isSel && driven.has(k));
+      el.row.setAttribute('aria-pressed', String(isSel));
+    }
+    this.renderVarInspector();
+  }
+
+  private renderVarInspector(): void {
+    const root = this.el.varInspector;
+    if (!root) return;
+    const v = this.selectedPlanetaryVar;
+    if (!v) {
+      root.innerHTML = `<div class="var-inspector-empty">Select any planetary variable above to inspect its causal network.</div>`;
+      delete this.el.varInspectorVal;
+      return;
+    }
+    const rules = couplingRules();
+    const upstream = rules.filter((r) => r.to === v);
+    const downstream = rules.filter((r) => r.from === v);
+    const polarity = varSense(v) === 'good' ? 'HIGHER IS HEALTHIER' : 'LOWER IS HEALTHIER';
+    const valTxt = PlanetaryState.readout(v, this.deps.planetary.vars[v]);
+
+    root.innerHTML = `
+      <div class="var-insp-head">
+        <div>
+          <span class="var-insp-title">${varLabel(v)}</span>
+          <span class="var-insp-pol">${polarity}</span>
+        </div>
+        <b class="var-insp-val" id="var-inspector-val">${valTxt}</b>
+      </div>
+      <div class="var-insp-cols">
+        <div class="var-insp-col">
+          <div class="var-insp-sub">Driven By (&larr; ${upstream.length})</div>
+          <div class="var-insp-list" id="var-insp-up"></div>
+        </div>
+        <div class="var-insp-col">
+          <div class="var-insp-sub">Drives (&rarr; ${downstream.length})</div>
+          <div class="var-insp-list" id="var-insp-down"></div>
+        </div>
+      </div>
+    `;
+    this.el.varInspectorVal = root.querySelector('#var-inspector-val') as HTMLElement;
+    const upEl = root.querySelector('#var-insp-up') as HTMLElement;
+    const downEl = root.querySelector('#var-insp-down') as HTMLElement;
+
+    const addRuleChip = (
+      parent: HTMLElement,
+      other: PlanetaryVar,
+      weight: number,
+      note: string,
+    ): void => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'var-coup-chip';
+      btn.dataset.var = other;
+      btn.title = note;
+      const sign = weight > 0 ? '+' : '';
+      btn.innerHTML = `<span class="lbl">${varLabel(other)}</span><span class="wt ${weight > 0 ? 'pos' : 'neg'}">${sign}${weight.toFixed(2)}</span>`;
+      btn.addEventListener('click', () => this.selectPlanetaryVar(other));
+      parent.appendChild(btn);
+    };
+
+    if (upstream.length === 0) {
+      upEl.innerHTML = `<span class="var-insp-none">Baseline / direct work</span>`;
+    } else {
+      for (const r of upstream) addRuleChip(upEl, r.from, r.gain, r.why);
+    }
+
+    if (downstream.length === 0) {
+      downEl.innerHTML = `<span class="var-insp-none">Terminal indicator</span>`;
+    } else {
+      for (const r of downstream) addRuleChip(downEl, r.to, r.gain, r.why);
     }
   }
 
@@ -1063,6 +1276,42 @@ export class UIController {
       }
     }
 
+    if (this.el.briefBlueprint) {
+      const spec = VEHICLE_SPECS[node.vehicle];
+      const biomeId: BiomeId = node.biomes[0] ?? 'SHATTERED_BASALT';
+      const mat = MATERIALS[biomeId];
+      const domProg = DOMAINS.find((d) => d.id === node.domain);
+      const unlocked = new Set(data.unlockedModules ?? this.codexData.unlockedModules);
+      const domPts = data.domainPoints?.[node.domain] ?? this.codexData.domainPoints[node.domain] ?? 0;
+      const level = Math.floor(domPts / 3) + 1;
+      const modHtml = (domProg?.unlocks ?? [])
+        .map((m) => {
+          const isOn = unlocked.has(m.module);
+          const reqPts = m.level === 1 ? 1 : (m.level - 1) * 3;
+          const badge = isOn ? 'ACTIVE' : `REQ ${reqPts} PT`;
+          return `<div class="bp-mod ${isOn ? 'on' : ''}"><div><b>${m.module}</b> <span class="bp-mod-badge">${badge}</span></div><div class="bp-mod-desc">${m.note}</div></div>`;
+        })
+        .join('');
+
+      this.el.briefBlueprint.innerHTML = `
+        <div class="bp-header">
+          <span>${domainBadgeSvg(node.domain)} <b>${spec.designation} · ${spec.title}</b></span>
+          <span>${spec.massLabel}</span>
+        </div>
+        <div class="bp-diagram">${vehicleBlueprintSvg(node.vehicle)}</div>
+        <div class="bp-meta-grid">
+          <div><span>Primary Biome</span><b>${BIOME_LABEL[biomeId]}</b></div>
+          <div><span>Hardness / Bearing</span><b>${Math.round(mat.hardness * 100)}% / ${mat.bearingCapacity} kPa</b></div>
+          <div><span>Conductivity / Friction</span><b>${Math.round(mat.conductivity * 100)}% / ${mat.friction.toFixed(2)}</b></div>
+          <div><span>Density / Toxicity</span><b>${mat.density.toFixed(1)} g/cm³ / ${Math.round(mat.toxicity * 100)}%</b></div>
+        </div>
+        <div class="bp-mods-wrap">
+          <div class="bp-mods-title"><span>${DOMAIN_LABEL[node.domain]} Subsystems</span><span>Domain Pts: ${domPts} (Lvl ${level})</span></div>
+          <div class="bp-mods-list">${modHtml}</div>
+        </div>
+      `;
+    }
+
     this.el.briefObjectives.innerHTML = '';
     for (const o of data.objectives) {
       const li = document.createElement('li');
@@ -1138,6 +1387,200 @@ export class UIController {
 
   get isSettingsOpen(): boolean {
     return this.el.settings.classList.contains('open');
+  }
+
+  // -- survey archive & engineering codex -----------------------------------
+
+  setCodexData(data: {
+    domainPoints: Record<string, number>;
+    unlockedModules: string[];
+    log: { t: number; text: string }[];
+  }): void {
+    this.codexData = {
+      domainPoints: { ...data.domainPoints },
+      unlockedModules: [...data.unlockedModules],
+      log: [...data.log],
+    };
+    if (this.isCodexOpen) this.renderCodex();
+  }
+
+  openCodex(tab: CodexTab = this.codexTab): void {
+    this.codexTab = tab;
+    for (const b of this.el.codexTabs.querySelectorAll<HTMLButtonElement>('.codex-tab')) {
+      const active = b.dataset.tab === tab;
+      b.setAttribute('aria-selected', String(active));
+      b.classList.toggle('active', active);
+    }
+    this.renderCodex();
+    this.el.codex.classList.add('open');
+    this.el.codexClose.focus();
+  }
+
+  closeCodex(): void {
+    this.el.codex.classList.remove('open');
+  }
+
+  get isCodexOpen(): boolean {
+    return this.el.codex.classList.contains('open');
+  }
+
+  private renderCodex(): void {
+    const body = this.el.codexBody;
+    if (!body) return;
+    const unlocked = new Set(this.codexData.unlockedModules);
+
+    if (this.codexTab === 'DOMAINS') {
+      body.innerHTML = DOMAINS.map((d) => {
+        const pts = this.codexData.domainPoints[d.id] ?? 0;
+        const level = Math.floor(pts / 3) + 1;
+        const mods = d.unlocks
+          .map((m) => {
+            const on = unlocked.has(m.module);
+            const reqPts = m.level === 1 ? 1 : (m.level - 1) * 3;
+            return `
+              <div class="codex-mod ${on ? 'on' : ''}">
+                <div class="codex-mod-top">
+                  <b>${m.module}</b>
+                  <span class="codex-badge ${on ? 'on' : ''}">${on ? 'ACTIVE' : `REQ ${reqPts} PT`}</span>
+                </div>
+                <div class="codex-mod-desc">${m.note}</div>
+              </div>
+            `;
+          })
+          .join('');
+        return `
+          <div class="codex-section">
+            <div class="codex-sec-head">
+              <span>${domainBadgeSvg(d.id)} <b>${d.label} Domain</b></span>
+              <span class="codex-pts">${pts} PT${pts === 1 ? '' : 'S'} · LVL ${level}</span>
+            </div>
+            <p class="codex-desc">${d.blurb}</p>
+            <div class="codex-mod-grid">${mods}</div>
+          </div>
+        `;
+      }).join('');
+      return;
+    }
+
+    if (this.codexTab === 'BLUEPRINTS') {
+      const vehiclesHtml = Object.values(VEHICLE_SPECS)
+        .map(
+          (v) => `
+          <div class="codex-section">
+            <div class="codex-sec-head">
+              <span>${domainBadgeSvg(v.domain)} <b>${v.designation} · ${v.title}</b></span>
+              <span class="codex-pts">${v.massLabel}</span>
+            </div>
+            <div class="bp-diagram">${vehicleBlueprintSvg(v.kind)}</div>
+            <p class="codex-desc">${v.summary}</p>
+            <div class="codex-kv">
+              <span><b>Operational Envelope:</b> ${v.envelope}</span>
+              <span><b>Primary Subsystem:</b> ${v.primarySystem}</span>
+            </div>
+          </div>
+        `,
+        )
+        .join('');
+
+      const biomesHtml = (Object.keys(MATERIALS) as BiomeId[])
+        .map((id) => {
+          const b = MATERIALS[id];
+          return `
+          <div class="codex-biome-card">
+            <div class="codex-mod-top"><b>${BIOME_LABEL[id]}</b><span>${b.bearingCapacity} kPa</span></div>
+            <div class="codex-biome-stats">
+              <span>Hardness ${Math.round(b.hardness * 100)}%</span>
+              <span>Conductivity ${Math.round(b.conductivity * 100)}%</span>
+              <span>Density ${b.density.toFixed(1)}</span>
+              <span>Friction ${b.friction.toFixed(2)}</span>
+              <span>Toxicity ${Math.round(b.toxicity * 100)}%</span>
+            </div>
+          </div>
+        `;
+        })
+        .join('');
+
+      body.innerHTML = `
+        <h3 class="codex-subhead">Field Machine Schematics</h3>
+        ${vehiclesHtml}
+        <h3 class="codex-subhead">Sector Biome Material Ledger</h3>
+        <div class="codex-biome-grid">${biomesHtml}</div>
+      `;
+      return;
+    }
+
+    if (this.codexTab === 'PROVENANCE') {
+      const refEntries: { title: string; tag: string; lines: readonly string[] }[] = [
+        { title: 'Starsilk Substrate', tag: 'CANON LOCK', lines: ARCHIVAL_REFERENCES.starsilk },
+        { title: 'Siege Wall', tag: 'NAVIGATION EXCLUSION', lines: ARCHIVAL_REFERENCES.siegeWall },
+        { title: 'Blood Rings', tag: 'ARCHIVAL RECORD', lines: ARCHIVAL_REFERENCES.bloodRings },
+      ];
+      const refsHtml = refEntries
+        .map(
+          (r) => `
+          <div class="codex-mod on">
+            <div class="codex-mod-top">
+              <b>${r.title}</b>
+              <span class="codex-badge on">${r.tag}</span>
+            </div>
+            ${r.lines.map((l) => `<div class="codex-mod-desc">— ${l}</div>`).join('')}
+          </div>
+        `,
+        )
+        .join('');
+
+      const localRows: { label: string; items: string }[] = [
+        { label: 'Survey World', items: GAME_LOCAL_INVENTIONS.planet },
+        { label: 'Settlements', items: GAME_LOCAL_INVENTIONS.settlements.join(' · ') },
+        { label: 'Acoustic Spires', items: GAME_LOCAL_INVENTIONS.spires.join(' · ') },
+        { label: 'Crisis Sectors', items: GAME_LOCAL_INVENTIONS.crises.join(' · ') },
+        { label: 'Engineering Terms', items: GAME_LOCAL_INVENTIONS.terms.join(' · ') },
+      ];
+      const localHtml = localRows
+        .map(
+          (g) => `
+          <div class="codex-local-row">
+            <div><b>${g.label}</b> <span class="codex-badge">0-ARK LOCAL</span></div>
+            <div class="codex-mod-desc">${g.items}</div>
+          </div>
+        `,
+        )
+        .join('');
+
+      const locksHtml = Object.entries(CANON_FACTS)
+        .map(
+          ([k, v]) => `
+          <div class="codex-lock-pill"><span>${k}</span><b>${String(v)}</b></div>
+        `,
+        )
+        .join('');
+
+      body.innerHTML = `
+        <h3 class="codex-subhead">Dossier Archival Records (Established Canon)</h3>
+        <div class="codex-mod-grid">${refsHtml}</div>
+        <h3 class="codex-subhead">0-ARK Survey Designations (Game-Local Inventions)</h3>
+        <p class="codex-desc">${GAME_LOCAL_INVENTIONS.note}</p>
+        <div class="codex-local-list">${localHtml}</div>
+        <h3 class="codex-subhead">Active Cosmological Invariant Locks</h3>
+        <div class="codex-lock-grid">${locksHtml}</div>
+      `;
+      return;
+    }
+
+    // LOG tab
+    const entries = [...this.codexData.log].reverse();
+    const logHtml =
+      entries.length === 0
+        ? `<div class="codex-desc">No engineering log entries recorded yet.</div>`
+        : entries
+            .map((e, idx) => {
+              return `<div class="codex-log-row"><span class="t">#${entries.length - idx}</span><span class="msg">${e.text}</span></div>`;
+            })
+            .join('');
+    body.innerHTML = `
+      <h3 class="codex-subhead">Chronological Campaign Telemetry Log (${entries.length})</h3>
+      <div class="codex-log-list">${logHtml}</div>
+    `;
   }
 
   applySettings(s: SettingsRecord): void {
@@ -1218,6 +1661,17 @@ export class UIController {
 
   selectSpire(spireId: number): void {
     this.selectedSpireId = spireId;
+  }
+
+  selectSettlement(settlementId: string | null): void {
+    this.selectedSettlementId = settlementId;
+    if (this.el.settlementGrid) {
+      for (const r of this.el.settlementGrid.querySelectorAll<HTMLElement>('.settlement-row')) {
+        const isSel = r.dataset.id === settlementId;
+        r.classList.toggle('selected', isSel);
+        r.setAttribute('aria-pressed', String(isSel));
+      }
+    }
   }
 
   /** Render live camera mode and machine control chips on the sector HUD. */
@@ -1317,11 +1771,27 @@ export class UIController {
           const r = document.createElement('div');
           r.className = 'settlement-row';
           r.dataset.id = s.id;
+          r.dataset.settlement = s.id;
+          r.tabIndex = 0;
+          r.setAttribute('role', 'button');
+          r.setAttribute('aria-pressed', String(s.id === this.selectedSettlementId));
+          r.title = `Focus globe on ${s.name} (${s.populationK}k survivors)`;
           const nameEl = document.createElement('span');
           nameEl.textContent = s.name.split(' ')[0];
           const valEl = document.createElement('b');
           valEl.textContent = '--';
           r.append(nameEl, valEl);
+          const activate = (): void => {
+            this.selectSettlement(s.id);
+            this.deps.onSelectSettlement?.(s.id);
+          };
+          r.addEventListener('click', activate);
+          r.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              activate();
+            }
+          });
           this.el.settlementGrid.appendChild(r);
           this.settlementValEls.push(valEl);
         }
@@ -1362,13 +1832,14 @@ export class UIController {
       visible: boolean;
       x: number;
       y: number;
-      kind: 'node' | 'spire';
+      kind: 'node' | 'spire' | 'settlement';
       title: string;
       tag: string;
       sub: string;
       actionLabel: string;
       nodeId?: string;
       spireId?: number;
+      settlementId?: string;
     } | null,
   ): void {
     if (!this.el.globeReticle) return;
@@ -1380,18 +1851,22 @@ export class UIController {
     this.el.globeReticle.style.left = `${reticle.x.toFixed(1)}px`;
     this.el.globeReticle.style.top = `${reticle.y.toFixed(1)}px`;
     this.el.reticleCard.classList.toggle('spire', reticle.kind === 'spire');
+    this.el.reticleCard.classList.toggle('settlement', reticle.kind === 'settlement');
     if (this.el.reticleTitle.textContent !== reticle.title) this.el.reticleTitle.textContent = reticle.title;
     if (this.el.reticleTag.textContent !== reticle.tag) this.el.reticleTag.textContent = reticle.tag;
     if (this.el.reticleSub.textContent !== reticle.sub) this.el.reticleSub.textContent = reticle.sub;
     if (this.el.reticleAction.textContent !== reticle.actionLabel) {
       this.el.reticleAction.textContent = reticle.actionLabel;
     }
+    delete this.el.reticleAction.dataset.nodeId;
+    delete this.el.reticleAction.dataset.spireId;
+    delete this.el.reticleAction.dataset.settlementId;
     if (reticle.nodeId) {
       this.el.reticleAction.dataset.nodeId = reticle.nodeId;
-      delete this.el.reticleAction.dataset.spireId;
     } else if (reticle.spireId !== undefined) {
       this.el.reticleAction.dataset.spireId = String(reticle.spireId);
-      delete this.el.reticleAction.dataset.nodeId;
+    } else if (reticle.settlementId) {
+      this.el.reticleAction.dataset.settlementId = reticle.settlementId;
     }
   }
 

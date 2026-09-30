@@ -344,11 +344,12 @@ export class OrbitalSkiff extends VehicleBase {
 
     const boosting = input.held('boost');
     const thrustScale = boosting ? 2.1 : 1;
+    const fuelEfficiency = this.hasModule('Rendezvous Assist') ? 0.75 : 1;
     const thrustMag = thrustVec.length();
     if (thrustMag > 1e-4) {
       this.velocity.addScaledVector(thrustVec, step * thrustScale);
       // Reaction control propellant burn.
-      this.rcsFuel = clamp01(this.rcsFuel - step * thrustMag * 0.0035 * thrustScale);
+      this.rcsFuel = clamp01(this.rcsFuel - step * thrustMag * 0.0035 * thrustScale * fuelEfficiency);
       this.drive = damp(this.drive, Math.min(1, thrustMag * thrustScale), 8, step);
     } else {
       this.drive = damp(this.drive, 0, 5, step);
@@ -365,7 +366,7 @@ export class OrbitalSkiff extends VehicleBase {
     const rotMag = rotVec.length();
     if (rotMag > 1e-4 && this.rcsFuel > 0) {
       this.angularVelocity.addScaledVector(rotVec, step);
-      this.rcsFuel = clamp01(this.rcsFuel - step * rotMag * 0.0022);
+      this.rcsFuel = clamp01(this.rcsFuel - step * rotMag * 0.0022 * fuelEfficiency);
     }
 
     // --- flight assist ----------------------------------------------------
@@ -373,11 +374,12 @@ export class OrbitalSkiff extends VehicleBase {
     this.assistBlend = damp(this.assistBlend, this.assistEnabled ? 1 : 0, 4, step);
     if (this.assistBlend > 0.001) {
       const a = this.assistBlend;
+      const dampScale = this.hasModule('Rendezvous Assist') ? 1.4 : 1;
       // Angular damping (attitude hold) — this is what makes the craft flyable.
-      this.angularVelocity.multiplyScalar(Math.max(0, 1 - 2.4 * a * step));
+      this.angularVelocity.multiplyScalar(Math.max(0, 1 - 2.4 * a * dampScale * step));
       // Optional translational stabilisation: cancel drift when no thrust.
       if (thrustMag < 1e-4) {
-        this.velocity.multiplyScalar(Math.max(0, 1 - 0.35 * a * step));
+        this.velocity.multiplyScalar(Math.max(0, 1 - 0.35 * a * dampScale * step));
       }
     }
 
@@ -550,17 +552,19 @@ export class OrbitalSkiff extends VehicleBase {
       return;
     }
     const d = this.target.position.distanceTo(this.position);
-    if (d > 1400) {
+    const maxRange = this.hasModule('Tether Winch') ? 1850 : 1400;
+    if (d > maxRange) {
       this.env.blip(this.position.x, this.position.y, this.position.z, 120, 0.08);
       return;
     }
+    const winchBoost = this.hasModule('Tether Winch') ? 1.35 : 1;
     const tether: Tether = {
       id: ++this.tetherIdCounter,
       debris: this.target,
       restLength: Math.max(24, d * 0.82),
-      stiffness: clamp(2.2e6 / Math.max(1, this.target.mass / 4000), 900, 26000),
-      damping: 5200,
-      breakThreshold: 3.4e6 * (0.55 + this.hullIntegrity * 0.45),
+      stiffness: clamp(2.2e6 / Math.max(1, this.target.mass / 4000), 900, 26000) * winchBoost,
+      damping: 5200 * winchBoost,
+      breakThreshold: 3.4e6 * (0.55 + this.hullIntegrity * 0.45) * winchBoost,
       tension: 0,
       anchor: new THREE.Vector3(0, -1.2, -6.5),
       attached: true,
@@ -609,7 +613,9 @@ export class OrbitalSkiff extends VehicleBase {
     const dist = d.position.distanceTo(this.position);
     // Must be close and slow relative to the skiff.
     const relSpeed = d.velocity.distanceTo(this.velocity);
-    if (dist > 320 || relSpeed > 4.5) {
+    const maxSlotDist = this.hasModule('Corridor Beacon') ? 460 : 320;
+    const maxSlotSpeed = this.hasModule('Corridor Beacon') ? 6.4 : 4.5;
+    if (dist > maxSlotDist || relSpeed > maxSlotSpeed) {
       this.env.blip(this.position.x, this.position.y, this.position.z, 190, 0.08);
       return;
     }
@@ -717,6 +723,7 @@ export class OrbitalSkiff extends VehicleBase {
         { label: 'Tether Latched', on: this.tethers.length > 0 },
         { label: 'Boost', on: this.env.input.held('boost') },
         { label: 'Vacuum — no external audio', on: true },
+        ...this.activeModules().map((m) => ({ label: `MOD · ${m}`, on: true })),
       ],
       readout: this.target
         ? `TARGET ${this.target.mass.toFixed(0)} kg · ${this.target.position.distanceTo(this.position).toFixed(0)} m`

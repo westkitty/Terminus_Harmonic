@@ -369,6 +369,8 @@ export class StrataCrawler extends VehicleBase {
     this.drilling = wantDrill && !overheated && this.power > 0.05;
 
     let powerDraw = DRIVE_POWER_DRAW * clamp01(Math.abs(this.trackSpeed) / MAX_TRACK_SPEED);
+    const hasCoolantLoop = this.hasModule('Coolant Loop');
+    const hasSonde = this.hasModule('Strata Sonde');
     if (this.drilling) {
       powerDraw += CUTTER_POWER_DRAW * (0.5 + field.material.hardness * 0.8);
       // Heat generated: work done against hardness, minus what coolant removes.
@@ -377,11 +379,13 @@ export class StrataCrawler extends VehicleBase {
       // is the whole thermal-management loop. In soft rock the same cutter runs
       // indefinitely.
       const generated = (0.22 + field.material.hardness * 0.55) * (0.35 + this.cutterSpin * 0.65);
-      const removed = 0.10 + this.coolant * 0.30;
+      const removed = (0.10 + this.coolant * 0.30) * (hasCoolantLoop ? 1.38 : 1);
       this.cutterTemp = clamp01(this.cutterTemp + (generated - removed) * step);
-      this.coolant = clamp01(this.coolant - step * (0.035 + field.material.hardness * 0.05));
+      this.coolant = clamp01(
+        this.coolant - step * (0.035 + field.material.hardness * 0.05) * (hasCoolantLoop ? 0.72 : 1),
+      );
       this.cutterSpin = damp(this.cutterSpin, 1, 2.5, step);
-      this.drillSeconds += step;
+      this.drillSeconds += step * (hasSonde ? 1.25 : 1);
 
       // Excavate ahead of the cutter.
       const carve = this._v2.set(
@@ -392,23 +396,27 @@ export class StrataCrawler extends VehicleBase {
       const carved = lattice.excavate(carve.x, carve.y, carve.z, CUTTER_RADIUS / lattice.cell);
       if (carved > 0) this.tunnelMeshDirty = true;
       lattice.addHeat(carve.x, carve.y, carve.z, 0.02);
-      this.drillSeconds += step;
+      this.drillSeconds += step * (hasSonde ? 1.25 : 1);
       if (this.drillSeconds >= 2.5) this.fireObjective('survey');
       this.fireObjective('bore');
     } else {
       this.cutterSpin = damp(this.cutterSpin, 0, 3, step);
       // Cooling: pumps run whenever the cutter is off.
-      this.cutterTemp = clamp01(this.cutterTemp - step * (0.06 + this.coolant * 0.12));
-      this.coolant = clamp01(this.coolant + step * 0.012);
+      this.cutterTemp = clamp01(
+        this.cutterTemp - step * (0.06 + this.coolant * 0.12) * (hasCoolantLoop ? 1.35 : 1),
+      );
+      this.coolant = clamp01(this.coolant + step * 0.012 * (hasCoolantLoop ? 1.4 : 1));
     }
 
     // Coolant regenerates slowly from the reactor loop.
-    this.coolant = clamp01(this.coolant + step * 0.004);
+    this.coolant = clamp01(this.coolant + step * (hasCoolantLoop ? 0.0065 : 0.004));
     this.power = clamp01(this.power - powerDraw * step * 0.06 + step * 0.05);
 
     // Hull stress: seismic pressure + instability + thermal load.
+    const sealRelief = this.hasModule('Seal Injector') ? 0.8 : 1;
     this.hullStress = clamp01(
-      this.instability * 0.55 + this.seismicPressure * 0.35 + this.cutterTemp * 0.25 + (1 - this.power) * 0.2,
+      (this.instability * 0.55 + this.seismicPressure * 0.35 + this.cutterTemp * 0.25 + (1 - this.power) * 0.2) *
+        sealRelief,
     );
 
     // Collapse warning groan.
@@ -460,7 +468,7 @@ export class StrataCrawler extends VehicleBase {
     const pos = this.position;
     const lattice = this.env.lattice;
     const deployPos = this._v1.set(pos.x, pos.y - 1.0, pos.z);
-    lattice.addHeat(deployPos.x, deployPos.y, deployPos.z, -0.55);
+    lattice.addHeat(deployPos.x, deployPos.y, deployPos.z, this.hasModule('Exchanger Mount') ? -0.75 : -0.55);
     this.installedExchangers++;
 
     // Anchor a physical heat-exchanger rig into the excavated rock in world space.
@@ -564,6 +572,7 @@ export class StrataCrawler extends VehicleBase {
         { label: 'Cutter Overheat', on: this.cutterTemp > 0.9 },
         { label: this.drilling ? 'Cutting' : 'Cutter Idle', on: this.drilling },
         { label: 'In Tunnel', on: this.env.lattice.isVoid(this.position.x, this.position.y, this.position.z) },
+        ...this.activeModules().map((m) => ({ label: `MOD · ${m}`, on: true })),
       ],
       readout: `Rock temperature ${(this.rockTemp * 900).toFixed(0)} degC · depth ${this.depth.toFixed(0)} m · drilled ${this.drillSeconds.toFixed(0)} s`,
       objectives: [],

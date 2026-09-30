@@ -270,4 +270,203 @@ describe('Quality uplift regressions', () => {
 
     game.dispose();
   });
+
+  it('applies unlocked domain modules to vehicle physics, HUD flags, and Harmonic phase-lock rate', async () => {
+    const THREE = await import('three');
+    const { World } = await import('../src/core/ecs');
+    const { InputManager, DEFAULT_BINDINGS } = await import('../src/core/input');
+    const { SectorField, TunnelLattice } = await import('../src/sector/field');
+    const { PlanetaryState } = await import('../src/state/planetary');
+    const { OrbitalSkiff } = await import('../src/vehicle/orbital');
+    const { StrataCrawler } = await import('../src/vehicle/crawler');
+    const { AtmosphericGlider } = await import('../src/vehicle/glider');
+    const { LandTrain } = await import('../src/vehicle/landtrain');
+    const { HarmonicSystem } = await import('../src/systems/systems');
+
+    const world = new World();
+    const canvas = dom.window.document.getElementById('scene') as HTMLCanvasElement;
+    const input = new InputManager(canvas, DEFAULT_BINDINGS);
+    const field = new SectorField({
+      seed: 42,
+      lat: 10,
+      lon: 20,
+      radius: 2048,
+      biome: 'SALT_FLAT',
+      geothermalPressure: 0.6,
+      tectonicShear: 0.5,
+      atmosphereToxicity: 0.5,
+      soilViability: 0.5,
+      turbulence: 0.2,
+    });
+    const lattice = new TunnelLattice(4, 256, 128);
+    lattice.configure(0, 0, field.elevation(0, 0));
+    const baseEnv = {
+      world,
+      input,
+      field,
+      lattice,
+      planetary: new PlanetaryState(42),
+      sunDirection: new THREE.Vector3(0, 1, 0),
+      wind: new THREE.Vector3(),
+      camera: new THREE.PerspectiveCamera(),
+      impact: () => {},
+      blip: () => {},
+      reportObjective: () => {},
+      particleScale: 1,
+      reducedMotion: false,
+      unlockedModules: [] as string[],
+    };
+
+    // 1. LandTrain: Route Grader reduces ground failure ratio on soft Salt Flat ground.
+    const trainBase = new LandTrain(world, baseEnv);
+    trainBase.spawn(new THREE.Vector3(0, 0, 0), 0);
+    trainBase.update(1 / 60);
+    const baseFailure = trainBase.predictedFailureRatio;
+
+    const trainUpgraded = new LandTrain(world, {
+      ...baseEnv,
+      unlockedModules: ['Bogie Load Balancer', 'Route Grader', 'Depot Link'],
+    });
+    trainUpgraded.spawn(new THREE.Vector3(0, 0, 0), 0);
+    trainUpgraded.update(1 / 60);
+    expect(trainUpgraded.predictedFailureRatio).toBeLessThan(baseFailure);
+    expect(trainUpgraded.hud().flags.some((f) => f.label === 'MOD · Route Grader' && f.on)).toBe(true);
+
+    // 2. AtmosphericGlider: Sampler Winch lowers parasitic drag at equal airspeed.
+    const gliderBase = new AtmosphericGlider(world, baseEnv);
+    gliderBase.spawn(new THREE.Vector3(0, 900, 0), 0);
+    gliderBase.velocity.set(0, 0, -28);
+    gliderBase.update(1 / 60);
+
+    const gliderUpgraded = new AtmosphericGlider(world, {
+      ...baseEnv,
+      unlockedModules: ['Sensor Dispenser', 'Thermal Reader', 'Sampler Winch'],
+    });
+    gliderUpgraded.spawn(new THREE.Vector3(0, 900, 0), 0);
+    gliderUpgraded.velocity.set(0, 0, -28);
+    gliderUpgraded.update(1 / 60);
+    expect(gliderUpgraded.dragForce).toBeGreaterThan(0);
+    expect(gliderUpgraded.dragForce).toBeLessThan(gliderBase.dragForce);
+    expect(gliderUpgraded.hud().flags.some((f) => f.label === 'MOD · Sampler Winch' && f.on)).toBe(true);
+
+    // 3. StrataCrawler: Exchanger Mount cools cutter more aggressively when seating an exchanger.
+    const crawlerBase = new StrataCrawler(world, baseEnv);
+    crawlerBase.spawn(new THREE.Vector3(0, -10, 0), 0);
+    const crawlerUpgraded = new StrataCrawler(world, {
+      ...baseEnv,
+      unlockedModules: ['Coolant Loop', 'Strata Sonde', 'Exchanger Mount', 'Seal Injector'],
+    });
+    crawlerUpgraded.spawn(new THREE.Vector3(0, -10, 0), 0);
+    expect(crawlerUpgraded.hud().flags.some((f) => f.label === 'MOD · Coolant Loop' && f.on)).toBe(true);
+
+    // 4. OrbitalSkiff: surfaces active Orbit modules in HUD flags.
+    const skiffUpgraded = new OrbitalSkiff(world, {
+      ...baseEnv,
+      unlockedModules: ['Tether Winch', 'Rendezvous Assist', 'Corridor Beacon'],
+    });
+    skiffUpgraded.spawn(new THREE.Vector3(0, 0, 0), 0);
+    expect(skiffUpgraded.hud().flags.some((f) => f.label === 'MOD · Tether Winch' && f.on)).toBe(true);
+
+    // 5. HarmonicSystem: Phase Reference / Interference Mapper accelerates establishment and raises lock strength on serviced spires.
+    const makeSpires = () =>
+      Array.from({ length: 12 }, (_, id) => ({
+        id,
+        functional: id < 9,
+        phase: id * 30,
+        repairs: id < 9 ? 2 : 0,
+        seated: true,
+      }));
+    const hBase = new HarmonicSystem(new PlanetaryState(42), makeSpires());
+    const hUpgraded = new HarmonicSystem(new PlanetaryState(42), makeSpires());
+    hUpgraded.setUnlockedModules(['Phase Reference', 'Interference Mapper']);
+    let baseFrames = 3600;
+    let upgradedFrames = 3600;
+    for (let i = 0; i < 3600; i++) {
+      const ctx = { world, dt: 1 / 60, elapsed: i / 60, frame: i, bus: world.bus };
+      hBase.update(ctx);
+      hUpgraded.update(ctx);
+      if (hBase.established && baseFrames === 3600) baseFrames = i;
+      if (hUpgraded.established && upgradedFrames === 3600) upgradedFrames = i;
+    }
+    expect(upgradedFrames).toBeLessThan(baseFrames);
+    expect(hUpgraded.locks[0]).toBeGreaterThan(hBase.locks[0]);
+
+    trainBase.dispose();
+    trainUpgraded.dispose();
+    gliderBase.dispose();
+    gliderUpgraded.dispose();
+    crawlerBase.dispose();
+    crawlerUpgraded.dispose();
+    skiffUpgraded.dispose();
+    input.dispose();
+  });
+
+  it('wires Causal Coupling Inspector, Survey Codex, Blueprints, Settlement Focus, and Overlay Shortcuts', () => {
+    const game = makeGame();
+    game.beginCampaign();
+    for (let i = 0; i < 10; i++) game.update(1 / 60);
+
+    // 1. Causal Coupling Inspector is populated and interactive.
+    const inspector = dom.window.document.getElementById('var-inspector')!;
+    expect(inspector.textContent).toContain('Harmonic Coherence');
+    const tectonicRow = dom.window.document.querySelector('.var-row[data-var="tectonicShear"]') as HTMLElement;
+    expect(tectonicRow).toBeTruthy();
+    tectonicRow.click();
+    expect(tectonicRow.classList.contains('is-selected')).toBe(true);
+    expect(inspector.textContent).toContain('Tectonic Shear');
+    expect(inspector.querySelectorAll('.var-coup-chip').length).toBeGreaterThan(0);
+
+    // 2. Crisis Briefing renders the SVG vehicle blueprint, biome metrics, and domain subsystems.
+    game.selectNode('ORBITAL_SHADOW_CASCADE');
+    const bp = dom.window.document.getElementById('briefing-blueprint')!;
+    expect(bp.querySelector('svg.blueprint-svg')).toBeTruthy();
+    expect(bp.textContent).toContain('ARS-VI');
+    expect(bp.textContent).toContain('Tether Winch');
+    (dom.window.document.getElementById('briefing-close') as HTMLButtonElement).click();
+
+    // 3. Survey Archive & Engineering Codex opens via button or [C] and renders all 4 tabs.
+    const codexBtn = dom.window.document.getElementById('macro-codex-btn') as HTMLButtonElement;
+    expect(codexBtn).toBeTruthy();
+    codexBtn.click();
+    const codex = dom.window.document.getElementById('codex')!;
+    expect(codex.classList.contains('open')).toBe(true);
+    expect(codex.textContent).toContain('Orbit Domain');
+
+    const bpTab = codex.querySelector('.codex-tab[data-tab="BLUEPRINTS"]') as HTMLButtonElement;
+    bpTab.click();
+    expect(codex.querySelectorAll('svg.blueprint-svg').length).toBe(4);
+
+    const provTab = codex.querySelector('.codex-tab[data-tab="PROVENANCE"]') as HTMLButtonElement;
+    provTab.click();
+    expect(codex.textContent).toContain('0-ARK Survey Designations');
+    expect(codex.textContent).toContain('bloodEclipseWarYears');
+
+    const logTab = codex.querySelector('.codex-tab[data-tab="LOG"]') as HTMLButtonElement;
+    logTab.click();
+    expect(codex.querySelectorAll('.codex-log-row').length).toBeGreaterThan(0);
+    (dom.window.document.getElementById('codex-close') as HTMLButtonElement).click();
+    expect(codex.classList.contains('open')).toBe(false);
+
+    // 4. Clicking a settlement row focuses the settlement and marks it selected.
+    const firstSettlement = dom.window.document.querySelector('#settlement-grid .settlement-row') as HTMLElement;
+    expect(firstSettlement).toBeTruthy();
+    firstSettlement.click();
+    expect(firstSettlement.classList.contains('selected')).toBe(true);
+
+    // 5. Pressing Digit1..Digit7 in MACRO switches the active globe overlay.
+    dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { code: 'Digit7', bubbles: true }));
+    expect(game.debugState().overlay).toBe('HARMONIC');
+    dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { code: 'Digit1', bubbles: true }));
+    expect(game.debugState().overlay).toBe('TOPOGRAPHY');
+
+    // 6. serializeSave() snapshots live state even without a prior saveGame() call.
+    game.startCrisis('GLASS_BASIN_SUPPLY_FAILURE');
+    for (let i = 0; i < 100; i++) game.update(1 / 60);
+    game.completeActiveObjectives();
+    const exported = JSON.parse(game.serializeSave());
+    expect(exported.campaign.unlockedModules).toContain('Bogie Load Balancer');
+    expect(exported.crises.find((c: { id: string }) => c.id === 'GLASS_BASIN_SUPPLY_FAILURE').status).toBe('RESOLVED');
+
+    game.dispose();
+  });
 });

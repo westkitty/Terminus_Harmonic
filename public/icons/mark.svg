@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="The Terminus Harmonic emblem">
+  <rect width="128" height="128" rx="18" fill="#07080a"/>
+  <circle cx="64" cy="64" r="52" fill="none" stroke="#1d4c63" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <circle cx="64" cy="64" r="46" fill="none" stroke="#3fa9d8" stroke-width="1.6" stroke-opacity="0.82"/>
+  <circle cx="64" cy="64" r="35" fill="#2a1d14" stroke="#8a5f28" stroke-width="1.5"/>
+  <path d="M33 54 C48 46, 74 50, 95 43" fill="none" stroke="#c98a3c" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M31 71 C52 66, 73 76, 96 68" fill="none" stroke="#b0563a" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M42 84 C58 80, 72 84, 86 79" fill="none" stroke="#6f8a96" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M40 38 A35 35 0 0 1 94 46" fill="none" stroke="#e0b060" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="64" cy="18" r="2.8" fill="#3fa9d8"/>
+  <circle cx="110" cy="64" r="2.4" fill="#3fa9d8"/>
+  <circle cx="64" cy="110" r="2.4" fill="#3fa9d8"/>
+  <circle cx="18" cy="64" r="2.4" fill="#3fa9d8"/>
+</svg>

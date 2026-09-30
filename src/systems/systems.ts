@@ -238,6 +238,7 @@ export class HarmonicSystem implements System {
   private pulseEnergy = 0;
   /** Phase of the network reference, in degrees. */
   private referencePhase = 0;
+  private hasPhaseRef = false;
 
   constructor(
     private planetary: PlanetaryState,
@@ -246,6 +247,10 @@ export class HarmonicSystem implements System {
     this.phases = spires.map((s) => s.phase);
     this.locks = spires.map((s) => (s.functional ? 0.85 : 0.1));
     this.recompute();
+  }
+
+  setUnlockedModules(modules: readonly string[]): void {
+    this.hasPhaseRef = modules.includes('Phase Reference') || modules.includes('Interference Mapper');
   }
 
   rebind(planetary: PlanetaryState, spires: SpireRecord[]): void {
@@ -313,7 +318,8 @@ export class HarmonicSystem implements System {
         this.locks[i] = damp(this.locks[i], 0.06, 0.5, dt);
         continue;
       }
-      const pull = clamp01(0.10 + s.repairs * 0.14 + p.vars.harmonicCoherence * 0.30);
+      const modBoost = this.hasPhaseRef && s.repairs > 0 ? 0.08 : 0;
+      const pull = clamp01(0.10 + s.repairs * 0.14 + modBoost + p.vars.harmonicCoherence * 0.30);
       const err = shortestDeg(this.phases[i], this.referencePhase);
       const wander = Math.sin(ctx.elapsed * 1.7 + i * 2.1) * (1 - pull) * 30;
       const next = this.phases[i] + err * Math.min(1, pull * LOCK_RATE * dt) + wander * dt;

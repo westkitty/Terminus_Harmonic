@@ -21,6 +21,7 @@ import { prefersHighContrast, prefersReducedMotion, watchPreference } from '../c
 import { PlanetaryState } from '../state/planetary';
 import {
   ACOUSTIC_SPIRES,
+  BIOME_LABEL,
   CRISIS_NODES,
   DOMAINS,
   SETTLEMENTS,
@@ -42,7 +43,7 @@ import {
 } from '../state/save';
 import { CrisisController, type CompletionReport } from './crisis';
 import { ScaleManager, type Scale } from './scale';
-import { CommandGlobe, type OverlayMode } from '../render/globe';
+import { CommandGlobe, OVERLAY_MODES, type OverlayMode } from '../render/globe';
 import { SkyDome } from '../render/sky';
 import { OrbitalLayer } from '../render/orbitalLayer';
 import { SectorEnvironment, hazardForBiome, localAtmosphereDensity } from '../render/environment';
@@ -207,6 +208,7 @@ export class Game {
       onAscend: () => this.ascend(),
       onSettingsChange: (patch) => this.applySettings(patch),
       onRebind: (action, code) => this.rebind(action, code),
+      onResetBindings: () => this.resetBindings(),
       onSave: () => this.saveSystem.requestManualSave(),
       onLoad: () => void this.loadGame(),
       onExport: () => this.exportSave(),
@@ -214,6 +216,7 @@ export class Game {
       onNewWorld: () => this.newWorld(),
       onCycleCamera: () => this.cycleCamera(),
       onPingSpire: (spireId) => this.pingSpire(spireId),
+      onSelectSettlement: (id) => this.selectSettlement(id),
     });
     this.ui.touchMove = (x, y) => this.input.setTouchAxis(x, 0, -y);
     this.ui.touchLook = (dx, dy) => this.input.addTouchLook(dx, dy);
@@ -225,6 +228,7 @@ export class Game {
 
     this.bindCrisisHandler();
     this.bindGlobePointer();
+    this.bindShortcutKeys();
     this.registerSystems();
     this.ui.applySettings(this.settings);
     this.watchPreferences();
@@ -233,6 +237,8 @@ export class Game {
     this.ui.setCrises(this.crises.all(), null);
     this.ui.setOverlay('ATMOSPHERE');
     this.globe.setOverlay('ATMOSPHERE');
+    this.harmonic.setUnlockedModules(this.save.campaign.unlockedModules);
+    this.syncCodexData();
   }
 
   /**
@@ -304,7 +310,7 @@ export class Game {
         () => this.harmonic.coherence,
         () => this.harmonic.locks,
         () => ACOUSTIC_SPIRES.map((s) => s.baseFreq),
-        () => this.ui.isBriefingOpen || this.ui.isSettingsOpen,
+        () => this.ui.isBriefingOpen || this.ui.isSettingsOpen || this.ui.isCodexOpen,
         () => undefined,
         () => undefined,
       ),
@@ -431,6 +437,26 @@ export class Game {
     this.bus.emit(Events.Toast, { message: 'Command Lattice online. Select a crisis node.', kind: '' });
     // First-minute experience: the globe resolves, overlays wake, one node pulses.
     this.globe.setOverlayVisible(true);
+    this.logEvent('Command Lattice link established (Survey 0-ARK)');
+  }
+
+  private logEvent(msg: string): void {
+    this.save.log.push({
+      t: Date.now(),
+      text: `[t+${this.planetary.simTime.toFixed(0)}s] ${msg}`,
+    });
+    if (this.save.log.length > 200) {
+      this.save.log = this.save.log.slice(-200);
+    }
+    this.syncCodexData();
+  }
+
+  private syncCodexData(): void {
+    this.ui.setCodexData({
+      domainPoints: this.save.campaign.domainPoints,
+      unlockedModules: this.save.campaign.unlockedModules,
+      log: this.save.log,
+    });
   }
 
   // -- main loop ------------------------------------------------------------
@@ -480,11 +506,12 @@ export class Game {
   };
 
   private handleGlobalInput(): void {
-    if (this.ui.isSettingsOpen || this.ui.isBriefingOpen) {
+    if (this.ui.isSettingsOpen || this.ui.isBriefingOpen || this.ui.isCodexOpen) {
       this.input.setEnabled(false);
       if (this.input.pressed('pause')) {
         if (this.ui.isSettingsOpen) this.ui.closeSettings();
         if (this.ui.isBriefingOpen) this.ui.closeBriefing();
+        if (this.ui.isCodexOpen) this.ui.closeCodex();
       }
       return;
     }
@@ -654,8 +681,41 @@ export class Game {
   private pointerDownPos: { x: number; y: number; t: number } | null = null;
   private hoveredNodeId: string | null = null;
   private hoveredSpireId: number | null = null;
+  private hoveredSettlementId: string | null = null;
   private selectedSpireId = 0;
+  private selectedSettlementId: string | null = null;
   private globePointerCleanup: (() => void) | null = null;
+  private shortcutKeyCleanup: (() => void) | null = null;
+
+  private bindShortcutKeys(): void {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (this.ui.pendingRebind) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (this.ui.isCodexOpen) this.ui.closeCodex();
+        else this.ui.openCodex();
+        return;
+      }
+      if (
+        this.scale.scale === 'MACRO' &&
+        !this.ui.isBriefingOpen &&
+        !this.ui.isSettingsOpen &&
+        !this.ui.isCodexOpen
+      ) {
+        const digitMatch = /^Digit([1-7])$/.exec(e.code);
+        if (digitMatch) {
+          const idx = Number(digitMatch[1]) - 1;
+          const mode = OVERLAY_MODES[idx];
+          if (mode) this.ui.setOverlay(mode);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    this.shortcutKeyCleanup = () => window.removeEventListener('keydown', onKeyDown);
+  }
 
   private bindGlobePointer(): void {
     const canvas = this.canvas;
@@ -664,7 +724,9 @@ export class Game {
 
     const castAt = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return { nodeId: null, spireId: null };
+      if (rect.width <= 0 || rect.height <= 0) {
+        return { nodeId: null, spireId: null, settlementId: null };
+      }
       ndc.set(
         ((clientX - rect.left) / rect.width) * 2 - 1,
         -((clientY - rect.top) / rect.height) * 2 + 1,
@@ -683,6 +745,7 @@ export class Game {
       const hit = castAt(e.clientX, e.clientY);
       this.hoveredNodeId = hit.nodeId;
       this.hoveredSpireId = hit.spireId;
+      this.hoveredSettlementId = hit.settlementId;
       this.globe.hoveredNode = hit.nodeId;
     };
 
@@ -697,6 +760,8 @@ export class Game {
         this.selectNode(hit.nodeId);
       } else if (hit.spireId !== null) {
         this.pingSpire(hit.spireId);
+      } else if (hit.settlementId) {
+        this.selectSettlement(hit.settlementId);
       }
     };
 
@@ -708,6 +773,23 @@ export class Game {
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
     };
+  }
+
+  /** Focus the Command Lattice camera and reticle on a survivor settlement. */
+  selectSettlement(settlementId: string): void {
+    const st = this.settlements.find((s) => s.id === settlementId);
+    const def = SETTLEMENTS.find((s) => s.id === settlementId);
+    if (!st || !def) return;
+    this.selectedSettlementId = settlementId;
+    this.selectedNodeId = null;
+    this.ui.setSelectedNode(null);
+    this.ui.selectSettlement(settlementId);
+    this.scale.focusNode(st.lat, st.lon, 100);
+    this.audio.uiTone(460, 0.08);
+    this.bus.emit(Events.Toast, {
+      message: `${st.name} · ${Math.round(st.viability * 100)}% viability · ${st.populationK}k survivors (${BIOME_LABEL[def.biome]})`,
+      kind: '',
+    });
   }
 
   /** Ping and phase-nudge an acoustic spire from the Command Lattice. */
@@ -777,6 +859,27 @@ export class Game {
         return;
       }
     }
+    const settlementId = this.hoveredSettlementId ?? this.selectedSettlementId;
+    if (settlementId) {
+      const st = this.settlements.find((s) => s.id === settlementId);
+      const def = SETTLEMENTS.find((s) => s.id === settlementId);
+      if (st && def && this.globe.projectSettlement(settlementId, this.scale.cameras.MACRO, this._v1)) {
+        const x = (this._v1.x * 0.5 + 0.5) * w;
+        const y = (-this._v1.y * 0.5 + 0.5) * h;
+        this.ui.updateGlobeReticle({
+          visible: true,
+          x,
+          y,
+          kind: 'settlement',
+          title: st.name,
+          tag: `${Math.round(st.viability * 100)}% VIABLE`,
+          sub: `${st.populationK}k survivors · ${BIOME_LABEL[def.biome]}`,
+          actionLabel: 'Focus Settlement',
+          settlementId,
+        });
+        return;
+      }
+    }
     this.ui.updateGlobeReticle(null);
   }
 
@@ -788,7 +891,9 @@ export class Game {
     const rt = this.crises.get(id as CrisisId);
     if (!rt) return;
     this.selectedNodeId = id;
+    this.selectedSettlementId = null;
     this.ui.setSelectedNode(id);
+    this.ui.selectSettlement(null);
     this.scale.focusNode(rt.def.lat, rt.def.lon, 100);
     const forecast = this.planetary.forecast(rt.def.resolution, 180);
     const data: BriefingData = {
@@ -805,6 +910,8 @@ export class Game {
         rt.status === 'LOCKED'
           ? `Requires ${rt.def.requiresSpires} functional acoustic spires.`
           : undefined,
+      unlockedModules: this.save.campaign.unlockedModules,
+      domainPoints: this.save.campaign.domainPoints,
     };
     this.ui.openBriefing(data);
     this.audio.uiTone(520, 0.08);
@@ -825,6 +932,7 @@ export class Game {
     const toOrbit = rt.def.vehicle === 'ORBITAL_SKIFF' && rt.def.domain === 'ORBIT';
     this.scale.beginDescend(toOrbit);
     this.bus.emit(Events.Toast, { message: `Descending into ${rt.def.name}`, kind: '' });
+    this.logEvent(`Descended into ${rt.def.name} (${rt.def.vehicle})`);
   }
 
   private onScaleChanged(next: Scale): void {
@@ -1046,12 +1154,18 @@ export class Game {
       if (u.level <= level && !campaign.unlockedModules.includes(u.module)) {
         campaign.unlockedModules.push(u.module);
         this.bus.emit(Events.Toast, { message: `Module unlocked: ${u.module} — ${u.note}`, kind: 'good' });
+        this.logEvent(`Subsystem unlocked: ${u.module} (${key})`);
       }
+    }
+    this.harmonic.setUnlockedModules(campaign.unlockedModules);
+    if (this.activeVehicle && this.sectorField && this.sectorLattice) {
+      this.activeVehicle.setEnvironment(this.buildVehicleEnvironment());
     }
     // A resolved crisis repairs one more acoustic spire.
     this.repairNextSpire();
     this.crises.refreshAvailability(this.functionalSpireCount());
     this.ui.setCrises(this.crises.all(), null);
+    this.logEvent(`Stabilised ${report.name} (+${report.rewards.points} ${key} pts)`);
     this.bus.emit(Events.Toast, {
       message: `${report.name} stabilised. Permanent baseline shift applied.`,
       kind: 'good',
@@ -1065,8 +1179,10 @@ export class Game {
     if (!next) return;
     next.functional = true;
     next.repairs = 2;
-    this.bus.emit(Events.SpireRepaired, { id: next.id, name: ACOUSTIC_SPIRES[next.id]?.name });
+    const name = ACOUSTIC_SPIRES[next.id]?.name ?? `Spire #${next.id}`;
+    this.bus.emit(Events.SpireRepaired, { id: next.id, name });
     this.harmonic.lockSpire(next.id, 2);
+    this.logEvent(`Restored acoustic spire ${name}`);
   }
 
   private functionalSpireCount(): number {
@@ -1103,6 +1219,7 @@ export class Game {
       message: 'Terminus Harmonic established. The network is holding the world together.',
       kind: 'good',
     });
+    this.logEvent('Terminus Harmonic established across the planetary lattice');
     this.audio.uiTone(392, 0.9);
     void this.saveGame(false);
   }
@@ -1137,6 +1254,7 @@ export class Game {
       },
       particleScale: this.quality.particleScale,
       reducedMotion: this.settings.reducedMotion,
+      unlockedModules: this.save.campaign.unlockedModules,
     };
   }
 
@@ -1264,27 +1382,48 @@ export class Game {
     this.input.setBindings(bindings);
   }
 
+  resetBindings(): void {
+    const defaults: Record<string, string[]> = {};
+    for (const k of Object.keys(DEFAULT_BINDINGS) as ActionName[]) {
+      defaults[k] = [...DEFAULT_BINDINGS[k]];
+    }
+    this.settings.bindings = defaults;
+    this.input.setBindings({ ...DEFAULT_BINDINGS });
+    this.bus.emit(Events.Toast, { message: 'Controls reset to default bindings.', kind: 'good' });
+  }
+
   // -- persistence ----------------------------------------------------------
+
+  /** Synchronise live simulation state and checksum into `this.save`. */
+  private syncSaveRecord(appendAutosaveLog = false): SaveData {
+    this.save.updatedAt = Date.now();
+    this.save.playSeconds = (performance.now() - this.playStart) / 1000;
+    this.save.planetary = this.planetary.snapshot();
+    this.save.spires = this.spires.map((s) => ({ ...s }));
+    this.save.settlements = this.settlements.map((s) => ({ id: s.id, viability: s.viability }));
+    if (this.activeCrisisId && this.sectorLattice) {
+      this.crises.tunnelData.set(this.activeCrisisId, this.sectorLattice.serialize());
+    }
+    this.save.crises = this.crises.serialize();
+    this.save.settings = { ...this.settings, bindings: { ...this.settings.bindings } };
+    this.save.campaign.activeCrisis = this.activeCrisisId;
+    this.save.campaign.harmonicUnlocked = this.harmonicUnlocked;
+    if (appendAutosaveLog) {
+      this.save.log.push({ t: Date.now(), text: `autosave t+${this.planetary.simTime.toFixed(0)}s` });
+      if (this.save.log.length > 200) this.save.log = this.save.log.slice(-200);
+    }
+    const { checksum: _c, ...rest } = this.save;
+    this.save.checksum = computeChecksum(rest);
+    this.syncCodexData();
+    return this.save;
+  }
 
   /**
    * Write the campaign to IndexedDB and return what was written. Returning the
    * record (rather than void) lets callers and tests verify the payload.
    */
   async saveGame(manual: boolean): Promise<SaveData> {
-    this.save.updatedAt = Date.now();
-    this.save.playSeconds = (performance.now() - this.playStart) / 1000;
-    this.save.planetary = this.planetary.snapshot();
-    this.save.spires = this.spires.map((s) => ({ ...s }));
-    this.save.settlements = this.settlements.map((s) => ({ id: s.id, viability: s.viability }));
-    this.save.crises = this.crises.serialize();
-    this.save.settings = { ...this.settings, bindings: { ...this.settings.bindings } };
-    this.save.campaign.activeCrisis = this.activeCrisisId;
-    this.save.campaign.harmonicUnlocked = this.harmonicUnlocked;
-    this.save.log.push({ t: Date.now(), text: `autosave t+${this.planetary.simTime.toFixed(0)}s` });
-    if (this.save.log.length > 200) this.save.log = this.save.log.slice(-200);
-    const { checksum: _c, ...rest } = this.save;
-    this.save.checksum = computeChecksum(rest);
-
+    this.syncSaveRecord(true);
     const result = manual ? await SaveStore.writeManual(this.save) : await SaveStore.writeAutosave(this.save);
     if (result.ok) {
       this.bus.emit(Events.SaveWritten, { bytes: result.bytes, manual });
@@ -1305,6 +1444,7 @@ export class Game {
   }
 
   private applySave(data: SaveData): void {
+    this.teardownSector();
     this.save = data;
     this.planetary.restore(data.planetary);
     for (const s of data.spires) {
@@ -1324,9 +1464,11 @@ export class Game {
       if (c.tunnels) this.crises.tunnelData.set(c.id as CrisisId, c.tunnels);
     }
     this.harmonicUnlocked = data.campaign.harmonicUnlocked;
+    this.harmonic.setUnlockedModules(data.campaign.unlockedModules);
     this.applySettings({ ...data.settings, bindings: data.settings.bindings });
     this.crises.refreshAvailability(this.functionalSpireCount());
     this.ui.setCrises(this.crises.all(), null);
+    this.syncCodexData();
     this.resumeActiveCrisis();
     this.bus.emit(Events.SaveLoaded, { version: data.version });
   }
@@ -1352,6 +1494,7 @@ export class Game {
 
   /** Pure serialisation of the current campaign to a portable JSON string. */
   serializeSave(): string {
+    this.syncSaveRecord(false);
     return SaveStore.exportJson(this.save);
   }
 
@@ -1425,10 +1568,14 @@ export class Game {
     this.activeVehicle = null;
 
     this.selectedNodeId = null;
+    this.selectedSettlementId = null;
     this.save = newSave(seed, this.planetary.snapshot());
+    this.harmonic.setUnlockedModules(this.save.campaign.unlockedModules);
+    this.syncCodexData();
     this.crises.refreshAvailability(this.functionalSpireCount());
     this.ui.setCrises(this.crises.all(), null);
     this.ui.setSelectedNode(null);
+    this.ui.selectSettlement(null);
     this.ui.setMode('MACRO');
     this.globe.setPlanetaryState(this.planetary.snapshot(), performance.now(), true);
     this.bus.emit(Events.Toast, { message: 'New survey parameters generated.', kind: 'good' });
@@ -1464,6 +1611,8 @@ export class Game {
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.globePointerCleanup?.();
     this.globePointerCleanup = null;
+    this.shortcutKeyCleanup?.();
+    this.shortcutKeyCleanup = null;
     this.input.dispose();
     this.audio.dispose();
     this.ui.dispose();

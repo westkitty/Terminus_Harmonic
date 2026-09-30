@@ -168,8 +168,9 @@ describe('service worker (offline shell)', () => {
     // Keys are normalised the way the real Cache API normalises them.
     expect(shell!.has('/index.html')).toBe(true);
     expect(shell!.has('/manifest.webmanifest')).toBe(true);
+    expect(shell!.has('/icons/mark.svg')).toBe(true);
     expect(shell!.has('/icons/icon-512.png')).toBe(true);
-    expect(shell!.size).toBe(6);
+    expect(shell!.size).toBe(7);
   });
 
   it('caches the hashed bundles the page reports, which the static list cannot', async () => {

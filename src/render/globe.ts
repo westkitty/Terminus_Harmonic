@@ -200,6 +200,7 @@ export class CommandGlobe {
   private spireById = new Map<number, THREE.Mesh>();
   private pickTargets: THREE.Mesh[] = [];
   private settlementMeshes: THREE.Mesh[] = [];
+  private settlementById = new Map<string, THREE.Mesh>();
   private debrisMesh: THREE.InstancedMesh | null = null;
   private routeLines: THREE.LineSegments | null = null;
 
@@ -371,8 +372,8 @@ export class CommandGlobe {
 
     this.buildMarkers();
     this.buildSpires();
-    this.pickTargets = [...this.markerMeshes, ...this.spireMeshes];
     this.buildSettlements();
+    this.pickTargets = [...this.markerMeshes, ...this.spireMeshes, ...this.settlementMeshes];
     this.buildDebris();
     this.buildRoutes();
     this.overlayDirty = true;
@@ -977,13 +978,18 @@ export class CommandGlobe {
   }
 
   /** Raycast helper for picking nodes on the globe. */
-  pick(raycaster: THREE.Raycaster): { nodeId: string | null; spireId: number | null } {
+  pick(raycaster: THREE.Raycaster): {
+    nodeId: string | null;
+    spireId: number | null;
+    settlementId: string | null;
+  } {
     const hits = raycaster.intersectObjects(this.pickTargets, false);
-    if (hits.length === 0) return { nodeId: null, spireId: null };
+    if (hits.length === 0) return { nodeId: null, spireId: null, settlementId: null };
     const o = hits[0].object;
     return {
       nodeId: (o.userData.nodeId as string) ?? null,
       spireId: (o.userData.spireId as number) ?? null,
+      settlementId: (o.userData.settlementId as string) ?? null,
     };
   }
 
@@ -1006,6 +1012,20 @@ export class CommandGlobe {
     const m = this.spireById.get(id) ?? this.spireMeshes.find((x) => x.userData.spireId === id);
     if (!m) return false;
     this.spireById.set(id, m);
+    out.copy(m.position);
+    this.planetMesh.localToWorld(out);
+    this._camDir.copy(camera.position).normalize();
+    this._surfDir.copy(out).normalize();
+    if (this._surfDir.dot(this._camDir) < 0.08) return false;
+    out.project(camera);
+    return out.z > -1 && out.z < 1;
+  }
+
+  /** Settlement screen position for HTML label anchoring (true when on visible front hemisphere). */
+  projectSettlement(id: string, camera: THREE.Camera, out: THREE.Vector3): boolean {
+    const m = this.settlementById.get(id) ?? this.settlementMeshes.find((x) => x.userData.settlementId === id);
+    if (!m) return false;
+    this.settlementById.set(id, m);
     out.copy(m.position);
     this.planetMesh.localToWorld(out);
     this._camDir.copy(camera.position).normalize();

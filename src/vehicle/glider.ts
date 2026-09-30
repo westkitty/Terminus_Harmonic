@@ -295,16 +295,19 @@ export class AtmosphericGlider extends VehicleBase {
   /** Vertical wind velocity at a world position (thermals + turbulence). */
   private verticalWind(x: number, y: number, z: number, t: number): number {
     let w = 0;
+    const radiusBoost = this.hasModule('Thermal Reader') ? 1.25 : 1;
+    const liftBoost = this.hasModule('Thermal Reader') ? 1.2 : 1;
     for (const th of this.thermals) {
       const dx = x - th.x;
       const dz = z - th.z;
+      const effRadius = th.radius * radiusBoost;
       const d2 = dx * dx + dz * dz;
-      if (d2 > th.radius * th.radius) continue;
+      if (d2 > effRadius * effRadius) continue;
       const d = Math.sqrt(d2);
       // Bell-shaped profile, strongest at the core, decaying with altitude.
-      const radial = Math.cos((d / th.radius) * Math.PI * 0.5);
+      const radial = Math.cos((d / effRadius) * Math.PI * 0.5);
       const altFade = Math.exp(-Math.max(0, y - 200) / 2600);
-      w += th.strength * radial * radial * altFade;
+      w += th.strength * liftBoost * radial * radial * altFade;
     }
     // Stochastic turbulence (shear corridor).
     if (this.turbulenceLevel > 0.01) {
@@ -384,7 +387,8 @@ export class AtmosphericGlider extends VehicleBase {
     this.cl = this.liftCoefficient(this.alpha);
     const q = 0.5 * this.airDensity * this.airspeed * this.airspeed;
     this.liftForce = q * WING_AREA * this.cl;
-    this.cd = CD0 + (this.cl * this.cl) / (Math.PI * ASPECT_RATIO * OSWALD);
+    const cd0Eff = CD0 * (this.hasModule('Sampler Winch') ? 0.84 : 1);
+    this.cd = cd0Eff + (this.cl * this.cl) / (Math.PI * ASPECT_RATIO * OSWALD);
     this.dragForce = q * WING_AREA * this.cd;
 
     this.stalled = this.alpha > STALL_ALPHA && this.airspeed > 4;
@@ -450,7 +454,8 @@ export class AtmosphericGlider extends VehicleBase {
     // --- mapping -----------------------------------------------------------
     // The glider maps the shear corridor by flying through it.
     if (this.turbulenceLevel > 0.25) {
-      this.mappedCells = Math.min(100, this.mappedCells + step * 14);
+      const mapRate = this.hasModule('Sensor Dispenser') ? 19 : 14;
+      this.mappedCells = Math.min(100, this.mappedCells + step * mapRate);
       if (Math.random() < step * 0.5) this.fireObjective('map');
     }
 
@@ -551,6 +556,7 @@ export class AtmosphericGlider extends VehicleBase {
         { label: 'In Thermal', on: this.thermalStrength > 1 },
         { label: 'Turbulence', on: this.turbulenceLevel > 0.25 },
         { label: `Sensors ${this.deployedSensors}/${this.sensorCapacity}`, on: this.deployedSensors > 0 },
+        ...this.activeModules().map((m) => ({ label: `MOD · ${m}`, on: true })),
       ],
       readout: `Air density ${(this.airDensity * 1000).toFixed(0)} g/m3 · CL ${this.cl.toFixed(2)} · CD ${this.cd.toFixed(3)} · glide ratio ${(this.cl / Math.max(0.001, this.cd)).toFixed(1)}`,
       objectives: [],
