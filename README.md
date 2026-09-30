@@ -156,18 +156,39 @@ Everything below was run in this workspace:
 
 | Check | Result |
 |---|---|
-| `npm run verify` | green — typecheck, canon gate, 129 tests |
-| Canon gate | 41 files, 16,133 lines, 11 prohibitions, 8 required locks |
-| `npx vitest run` | 129 passed across 10 files |
-| `npm run build` | 2.40 kB html · 213.63 kB js · 484.12 kB three chunk · 17.82 kB css |
+| `npm run verify` | green — typecheck, canon gate, 145 tests |
+| Canon gate | 44 files, 16,919 lines, 11 prohibitions, 8 required locks |
+| `npx vitest run` | 145 passed across 12 files |
+| `npm run build` | 2.40 kB html · 214.19 kB js · 484.12 kB three chunk · 17.82 kB css |
 | Production preview | every route HTTP 200 |
 | Dev server | HTTP 200 on the preview host |
+| `node --check dist/sw.js` | parses as plain JavaScript |
 
 The integration suite drives the real `Game` orchestrator inside jsdom with the
 WebGL renderer replaced by a recording stub: boot, campaign start, node
 selection, descent, sector construction, a possessed machine, simulated frames,
 ascent, save, reload, export/import, teardown, and the full Terminus Harmonic
 establishment path.
+
+Two suites exist because the things they cover were asserted but unproven:
+
+- `tests/serviceworker.test.ts` loads `public/sw.js` into a VM with stubbed
+  `caches` and `fetch` and drives it through install, activation, asset
+  precaching, offline navigation and offline asset fetch. It earned its keep
+  immediately by catching a TypeScript type annotation that had been pasted into
+  the plain-JS worker — which would have stopped the worker parsing at all and
+  taken offline support down with it.
+- `tests/audio.test.ts` asserts that no `AudioContext` node exists before a user
+  gesture, that the engine is silent after disposal, and that it never opens a
+  network connection. It also caught a race: `unlock()` awaited `resume()` and
+  then read `this.ctx.state`, but `dispose()` nulls the context, so unlocking
+  and disposing in the same tick threw an unhandled rejection.
+- `tests/canon.test.ts` proves the canon gate has teeth rather than merely being
+  green: it plants eight real violations in a real scannable file in a scratch
+  copy of the tree and demands a non-zero exit that names the rule, then confirms
+  an identical clean tree passes. A checker that always exited zero could not
+  pass this suite. That test also found that the gate was not scanning
+  `README.md` — the project's front door and its most canon-sensitive prose.
 
 ### What is *not* verified
 

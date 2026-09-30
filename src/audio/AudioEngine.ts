@@ -234,15 +234,19 @@ export class AudioEngine {
   async unlock(): Promise<void> {
     if (this.disposed) return;
     if (!this.ctx) this.build();
-    if (!this.ctx) return;
-    if (this.ctx.state === 'suspended') {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
       try {
-        await this.ctx.resume();
+        await ctx.resume();
       } catch (err) {
         console.warn('[Audio] resume failed', err);
         return;
       }
     }
+    // resume() yields, and dispose() nulls the context — so re-check after the
+    // await rather than trusting the captured reference is still ours to use.
+    if (this.disposed || !this.ctx) return;
     this.unlocked = this.ctx.state === 'running';
   }
 
