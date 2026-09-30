@@ -1,0 +1,103 @@
+{
+  "$comment": "Machine-enforced Starsilk canon locks for THE TERMINUS HARMONIC. Consumed by scripts/canon-check.mjs. Source: https://westkitty.github.io/Starsilk_Character_Dossier/canon/",
+  "version": 1,
+  "prohibited": [
+    {
+      "id": "no-named-canon-character-william",
+      "pattern": "\\bwilliam\\b",
+      "why": "Canon lock: no named canon character; this name is specifically prohibited."
+    },
+    {
+      "id": "no-word-streamerer-two-words",
+      "pattern": "WordStreamer",
+      "why": "Canon lock: the term is one word; the two-word form is prohibited."
+    },
+    {
+      "id": "no-arachnid-imagery",
+      "pattern": "\\b(spiders?|arachnid\\w*|cobwebs?|web-pattern\\w*|insectoid\\w*|hivemind\\w*|carapace\\w*|mandible\\w*|eight-legged)\\b",
+      "why": "Absolute prohibition on spider/arachnid/insectoid/hive aesthetics. Whole words only, so WebGL / web app / webmanifest are unaffected."
+    },
+    {
+      "id": "no-blood-eclipse-war-duration-error",
+      "pattern": "\\b(seventeen|17)[\\s-]year\\b|\\byear\\s+17\\b",
+      "why": "Canon lock: the Blood Eclipse War lasted one hundred and seventy years."
+    },
+    {
+      "id": "no-resurrection",
+      "pattern": "\\b(uploaded consciousness|consciousness in (a|the) machine|digital afterlife|resurrect\\w*|ghost in the machine|dead but still thinking)\\b",
+      "why": "Canon lock: death is final. No dead-conscious-in-machines."
+    },
+    {
+      "id": "no-starsilk-as-fuel",
+      "pattern": "starsilk(?:(?!\\b(?:not|never)\\b)[^.\\n]){0,60}\\b(fuel|power source|battery|ore|mineable)\\b|\\b(fuel|power source|ore)\\b(?:(?!\\b(?:not|never)\\b)[^.\\n]){0,60}starsilk",
+      "why": "Canon lock: Starsilk is a programmable cosmological substrate, not a fuel and not mineable. Negated statements ('not a fuel') are allowed."
+    },
+    {
+      "id": "no-blood-rings-as-world-feature",
+      "pattern": "\\bblood rings?\\s+(ring|orbit|encircl\\w+|belt)\\b",
+      "why": "Canon lock: Blood Rings are atrocity artifacts around destroyed worlds, never rings around the playable world."
+    },
+    {
+      "id": "no-siege-wall-as-local-wall",
+      "pattern": "\\bsiege wall\\b[^.\\n]{0,40}\\b(fence|wall|barrier|border|perimeter)\\b",
+      "why": "Canon lock: the Siege Wall is a black-hole containment lattice / starless absence, never a local border wall."
+    },
+    {
+      "id": "no-combat",
+      "pattern": "\\b(kill the|shoot the|attack the|defeat the|destroy the enemy|enemy (?:units?|ships?|forces?)|weapon damage|combat encounter|fight the)\\b",
+      "why": "Canon lock: no combat of any kind. Crises are systemic engineering problems."
+    },
+    {
+      "id": "no-lock-and-key-puzzle-framing",
+      "pattern": "\\b(lock and key puzzle|solve the puzzle|puzzle lock)\\b",
+      "why": "Requirement: never turn engineering problems into abstract puzzles."
+    },
+    {
+      "id": "no-drakken-taxon-as-active-entity",
+      "pattern": "\\b(tremorhound|glassspine|magma pleuron|granithelion|fault-tongue|obsidian gul|quarrymind|aerokarst|cloudmaw|atmantid|weathernode|vortenbray|fumericus|skymourn|verdgorge|pollenvault|mycethron|raintaster|terragullet|petalnest|feralseed|abyssoriel|brinechoir|currenthalo|shelfcarver|glacierthroat|veilcurrent|coronaxis|ringthroat|solnexus|nullthorn|lyriboris|helionth|umbrakrael|cinderverge|singularch|ironcant|gridsaint|spiremolt|roadthorn|habitarch|archivore|harborhex|gorevault|lexiclast|calendarion|dreamtaxon|crownmute|hymnlock|memorialvein|shrinehunger|redacted grin|spinal loop|cradle\\.exe|foldhowl|manifest\\.discord|gloryfail|viral bastion)\\b",
+      "why": "Drakken taxa appear only as geology / fossils / remnants, never as named active entities or enemies."
+    }
+  ],
+  "required": [
+    {
+      "id": "blood-eclipse-war-170",
+      "pattern": "170",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "death-is-final",
+      "pattern": "death is final",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "no-active-drakken",
+      "pattern": "noActiveDrakken:\\s*true",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "no-named-characters",
+      "pattern": "noNamedCharacters:\\s*true",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "starsilk-not-fuel",
+      "pattern": "not a fuel",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "game-local-inventions-declared",
+      "pattern": "No named canon character",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "blood-rings-archival-only",
+      "pattern": "Archival overlay",
+      "file": "src/state/world.ts"
+    },
+    {
+      "id": "siege-wall-absence",
+      "pattern": "Absence, not structure",
+      "file": "src/state/world.ts"
+    }
+  ]
+}

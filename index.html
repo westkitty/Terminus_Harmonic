@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#07080a" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="The Terminus Harmonic — a planetary engineering sandbox set in the Starsilk universe. Observe a dying remnant world as a system, descend into one physical machine, repair one real problem, and watch the planet mathematically change."
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Terminus Harmonic" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <title>The Terminus Harmonic</title>
+    <style>
+      /* Minimal pre-paint styling so the first frame is never a white flash. */
+      html,
+      body {
+        margin: 0;
+        background: #05060a;
+        color: #d6d2c8;
+        overflow: hidden;
+        height: 100%;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      #scene {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .preboot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: ui-monospace, monospace;
+        font-size: 0.7rem;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: #4a4740;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+      <div class="preboot" id="preboot">initialising command lattice</div>
+    </div>
+    <noscript>
+      <div style="padding: 24px; font-family: monospace">
+        The Terminus Harmonic requires JavaScript and WebGL.
+      </div>
+    </noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

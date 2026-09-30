@@ -1,0 +1,37 @@
+{
+  "name": "The Terminus Harmonic",
+  "short_name": "Terminus Harmonic",
+  "description": "A planetary engineering sandbox set in the Starsilk universe. Observe a dying remnant world as a system, descend into one physical machine, repair one real problem, and watch the planet mathematically change because of what you did.",
+  "id": "./",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "orientation": "landscape",
+  "background_color": "#05060a",
+  "theme_color": "#07080a",
+  "categories": ["games", "simulation", "education"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

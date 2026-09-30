@@ -1,0 +1,91 @@
+{
+  "$comment": "Positive/negative samples for each canon prohibition, plus end-to-end gate probes. Lives under src/canon so the checker can scan it without self-tripping.",
+  "cases": {
+    "no-named-canon-character-william": {
+      "bad": "William signed the order.",
+      "good": "The survey lead signed the order."
+    },
+    "no-word-streamerer-two-words": {
+      "bad": "The WordStreamerer spoke.",
+      "good": "The Word Streamer spoke."
+    },
+    "no-arachnid-imagery": {
+      "bad": "A spider walked the web-pattern floor.",
+      "good": "WebGL renders the globe. The web manifest declares a maskable icon."
+    },
+    "no-blood-eclipse-war-duration-error": {
+      "bad": "The seventeen-year war ended.",
+      "good": "The Blood Eclipse War lasted 170 years."
+    },
+    "no-resurrection": {
+      "bad": "His uploaded consciousness ran the reactor.",
+      "good": "The reactor is unattended; its crew died here."
+    },
+    "no-starsilk-as-fuel": {
+      "bad": "Starsilk is the fuel for everything.",
+      "good": "Starsilk is not a fuel, not a power source, and not mined."
+    },
+    "no-blood-rings-as-world-feature": {
+      "bad": "Blood rings ring the playable world.",
+      "good": "Archival overlay: vitrified biospheric structures recorded around fallen worlds. Not present in this system."
+    },
+    "no-siege-wall-as-local-wall": {
+      "bad": "The siege wall is a fence around the basin.",
+      "good": "Navigation exclusion: heliocide containment lattice. Absence, not structure."
+    },
+    "no-combat": {
+      "bad": "Kill the enemy units at the depot.",
+      "good": "Reinstate the depot coupling before the next tide window."
+    },
+    "no-lock-and-key-puzzle-framing": {
+      "bad": "Solve the puzzle to open the gate.",
+      "good": "Bypass the flooded gallery and seal the bypass."
+    },
+    "no-drakken-taxon-as-active-entity": {
+      "bad": "A tremorhound blocked the rail line.",
+      "good": "The ridge is a fossilised Crust-Binder formation, inert for millennia."
+    }
+  },
+  "plants": [
+    {
+      "rule": "no-starsilk-as-fuel",
+      "file": "README.md",
+      "line": "Starsilk is the primary fuel for the land train and is mined locally."
+    },
+    {
+      "rule": "no-arachnid-imagery",
+      "file": "README.md",
+      "line": "The hive mind spins cobwebs through the crust."
+    },
+    {
+      "rule": "no-blood-rings-as-world-feature",
+      "file": "README.md",
+      "line": "The blood rings encircle the planet in a bright belt."
+    },
+    {
+      "rule": "no-siege-wall-as-local-wall",
+      "file": "README.md",
+      "line": "The Siege Wall is a fence along the northern border."
+    },
+    {
+      "rule": "no-combat",
+      "file": "README.md",
+      "line": "Defeat the enemy forces at the foundry."
+    },
+    {
+      "rule": "no-drakken-taxon-as-active-entity",
+      "file": "README.md",
+      "line": "A tremorhound guards the vent."
+    },
+    {
+      "rule": "no-resurrection",
+      "file": "README.md",
+      "line": "His uploaded consciousness runs the reactor."
+    },
+    {
+      "rule": "no-blood-eclipse-war-duration-error",
+      "file": "README.md",
+      "line": "The seventeen-year war ended."
+    }
+  ]
+}

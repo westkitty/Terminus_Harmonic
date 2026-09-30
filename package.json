@@ -1,0 +1,32 @@
+{
+  "name": "terminus-harmonic",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The Terminus Harmonic — a planetary engineering sandbox set in the Starsilk universe.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && npm run canon && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "typecheck": "tsc --noEmit",
+    "canon": "node scripts/canon-check.mjs",
+    "canon:json": "node scripts/canon-check.mjs --json",
+    "icons": "node scripts/make-icons.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm run canon && npm run test"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^26.6.3",
+    "@types/three": "^0.169.0",
+    "jsdom": "^30.1.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  }
+}
