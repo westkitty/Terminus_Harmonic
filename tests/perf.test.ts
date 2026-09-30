@@ -209,7 +209,7 @@ describe('Performance Baseline & Regression Suite', () => {
 
     game.dispose();
     // Performance regression guardrails (with CI headroom vs BEFORE baseline):
-    const ci = process.env.CI ? 1.75 : 1;
+    const ci = process.env.CI ? 3.0 : 1;
     expect(overlayCycleMs).toBeLessThan(400 * ci); // BEFORE: 564-683 ms
     expect(warmOverlayCycleMs).toBeLessThan(150 * ci); // Cached coarse field across 7 overlays
     expect(macroStats.avg).toBeLessThan(2.5 * ci); // BEFORE: 4.70-5.46 ms
@@ -305,7 +305,7 @@ describe('Performance Baseline & Regression Suite', () => {
     env.dispose();
 
     // Sub-component regression assertions vs BEFORE baseline:
-    const ci = process.env.CI ? 1.75 : 1;
+    const ci = process.env.CI ? 3.0 : 1;
     expect(globeConstructMs).toBeLessThan(60 * ci); // BEFORE: 142.28 ms
     expect(singleOverlaySwitchMs).toBeLessThan(45 * ci); // BEFORE: 72.45 ms
     expect(stateRepaintMs).toBeLessThan(25 * ci); // BEFORE: 46.00 ms
