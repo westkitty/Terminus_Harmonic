@@ -9,7 +9,7 @@
  * tracked as a sparse map of carved cells rather than a dense volume.
  */
 
-import { clamp01, fbm3, mixSeed, smoothstep, valueNoise3 } from '../core/math';
+import { clamp01, fbm2Seeds, mixSeed, smoothstep, valueNoise2 } from '../core/math';
 import { BIOME_LABEL, MATERIALS, type BiomeId, type MaterialProfile } from '../state/world';
 
 export interface SectorFieldParams {
@@ -72,6 +72,19 @@ export class SectorField {
   private seedB: number;
   private relief: number;
   private scale: number;
+  private invScale: number;
+  private flatScale: number;
+  private elevSeeds: readonly number[];
+  private basinSeeds: readonly number[];
+  private ventSeeds: readonly number[];
+  private colorSeeds: readonly number[];
+  private wetSeeds: readonly number[];
+  private ridgeSeed: number;
+  private strikeASeed: number;
+  private strikeBSeed: number;
+  private baseR = 0.115;
+  private baseG = 0.104;
+  private baseB = 0.098;
 
   constructor(params: SectorFieldParams) {
     this.params = params;
@@ -80,6 +93,43 @@ export class SectorField {
     this.seedB = mixSeed(this.seedA, 0x51ed270b);
     this.relief = RELIEF[params.biome];
     this.scale = SCALE[params.biome];
+    this.invScale = 1 / this.scale;
+    this.flatScale =
+      params.biome === 'VITRIFIED_BASIN' || params.biome === 'GLASS_LATTICE'
+        ? 0.35
+        : params.biome === 'SALT_FLAT'
+          ? 0.2
+          : 1;
+    this.elevSeeds = [
+      mixSeed(this.seedA, 0),
+      mixSeed(this.seedA, 1013),
+      mixSeed(this.seedA, 2026),
+      mixSeed(this.seedA, 3039),
+    ];
+    this.basinSeeds = [mixSeed(this.seedB, 113), mixSeed(this.seedB, 1126)];
+    this.ventSeeds = [mixSeed(this.seedB, 211), mixSeed(this.seedB, 1224)];
+    this.colorSeeds = [
+      mixSeed(this.seedB, 310),
+      mixSeed(this.seedB, 1323),
+      mixSeed(this.seedB, 2336),
+    ];
+    this.wetSeeds = [mixSeed(this.seedA, 990), mixSeed(this.seedA, 2003)];
+    this.ridgeSeed = mixSeed(this.seedB, 51);
+    this.strikeASeed = mixSeed(this.seedA, 17);
+    this.strikeBSeed = mixSeed(this.seedA, 29);
+
+    switch (params.biome) {
+      case 'VITRIFIED_BASIN': this.baseR = 0.055; this.baseG = 0.052; this.baseB = 0.058; break;
+      case 'GLASS_LATTICE': this.baseR = 0.07; this.baseG = 0.075; this.baseB = 0.09; break;
+      case 'SALT_FLAT': this.baseR = 0.42; this.baseG = 0.41; this.baseB = 0.38; break;
+      case 'TOXIC_VEIL': this.baseR = 0.16; this.baseG = 0.15; this.baseB = 0.10; break;
+      case 'REMNANT_SOIL': this.baseR = 0.13; this.baseG = 0.115; this.baseB = 0.095; break;
+      case 'PETRIFIED_MEGAFLORA': this.baseR = 0.10; this.baseG = 0.095; this.baseB = 0.085; break;
+      case 'FOUNDRY_RUIN': this.baseR = 0.125; this.baseG = 0.105; this.baseB = 0.095; break;
+      case 'FOSSIL_STRATA': this.baseR = 0.135; this.baseG = 0.12; this.baseB = 0.105; break;
+      case 'CRUSTAL_VENT': this.baseR = 0.15; this.baseG = 0.09; this.baseB = 0.075; break;
+      case 'SHATTERED_BASALT': this.baseR = 0.085; this.baseG = 0.082; this.baseB = 0.085; break;
+    }
   }
 
   /**
@@ -87,36 +137,37 @@ export class SectorField {
    * Continuous, deterministic, and cheap enough to call per-vertex.
    */
   elevation(x: number, z: number): number {
-    const s = this.scale;
-    const nx = x / s;
-    const nz = z / s;
+    const nx = x * this.invScale;
+    const nz = z * this.invScale;
+    const rel = this.relief;
 
     // Base rolling relief.
-    let h = (fbm3(nx, 0.37, nz, this.seedA, 4) - 0.5) * 2 * this.relief;
+    let h = (fbm2Seeds(nx, nz, this.elevSeeds) - 0.5) * 2 * rel;
 
     // War ridges: war-era terraforming left directional scarring.
-    const ridge = (1 - Math.abs(valueNoise3(nx * 1.7, 5.1, nz * 1.7, this.seedB) * 2 - 1)) ** 2;
-    h += (ridge - 0.35) * this.relief * 1.4;
+    const rv = 1 - Math.abs(valueNoise2(nx * 1.7, nz * 1.7, this.ridgeSeed) * 2 - 1);
+    const ridge = rv * rv;
+    h += (ridge - 0.35) * rel * 1.4;
 
     // Impact / vitrification basins: broad concave dishes.
-    const basin = fbm3(nx * 0.55, 11.3, nz * 0.55, this.seedB, 2);
-    h -= smoothstep(0.55, 0.95, basin) * this.relief * 1.1;
+    const basin = fbm2Seeds(nx * 0.55, nz * 0.55, this.basinSeeds);
+    h -= smoothstep(0.55, 0.95, basin) * rel * 1.1;
 
     // Fault gouge: sharp linear discontinuities along two dominant strikes.
-    const strikeA = Math.abs(valueNoise3(nx * 0.9, 3.3, nz * 0.9, mixSeed(this.seedA, 17)) - 0.5);
-    const strikeB = Math.abs(valueNoise3(nx * 0.9, 7.7, nz * 0.9, mixSeed(this.seedA, 29)) - 0.5);
-    const gouge = Math.min(strikeA, strikeB);
-    h -= (gouge < 0.03 ? 1 : 0) * this.relief * 0.25 * (0.4 + this.params.tectonicShear);
+    const strikeA = Math.abs(valueNoise2(nx * 0.9, nz * 0.9, this.strikeASeed) - 0.5);
+    const strikeB = Math.abs(valueNoise2(nx * 0.9, nz * 0.9, this.strikeBSeed) - 0.5);
+    const gouge = strikeA < strikeB ? strikeA : strikeB;
+    if (gouge < 0.03) {
+      h -= rel * 0.25 * (0.4 + this.params.tectonicShear);
+    }
 
     // Geothermal doming where pressure is high.
-    const vent = fbm3(nx * 0.35, 21.1, nz * 0.35, this.seedB, 2);
-    h += smoothstep(0.6, 1.0, vent) * this.relief * 0.9 * this.params.geothermalPressure;
+    if (this.params.geothermalPressure > 0.001) {
+      const vent = fbm2Seeds(nx * 0.35, nz * 0.35, this.ventSeeds);
+      h += smoothstep(0.6, 1.0, vent) * rel * 0.9 * this.params.geothermalPressure;
+    }
 
-    // Glass fields are flatter.
-    if (this.params.biome === 'VITRIFIED_BASIN' || this.params.biome === 'GLASS_LATTICE') h *= 0.35;
-    if (this.params.biome === 'SALT_FLAT') h *= 0.2;
-
-    return h;
+    return h * this.flatScale;
   }
 
   /** Slope in radians at a point. */
@@ -141,24 +192,12 @@ export class SectorField {
   /** Surface colour (linear-ish RGB) — scorched, oxidised, industrial. */
   color(x: number, z: number, out: [number, number, number]): [number, number, number] {
     const p = this.params;
-    const v = fbm3(x / 220, 3.1, z / 220, this.seedB, 3);
-    const wet = smoothstep(0.55, 0.9, fbm3(x / 400, 9.9, z / 400, this.seedA, 2));
+    const v = fbm2Seeds(x * 0.00454545, z * 0.00454545, this.colorSeeds);
+    const wet = smoothstep(0.55, 0.9, fbm2Seeds(x * 0.0025, z * 0.0025, this.wetSeeds));
     const tox = p.atmosphereToxicity;
     const soil = p.soilViability;
 
-    let r = 0.115, g = 0.104, b = 0.098;
-    switch (p.biome) {
-      case 'VITRIFIED_BASIN': r = 0.055; g = 0.052; b = 0.058; break;
-      case 'GLASS_LATTICE': r = 0.07; g = 0.075; b = 0.09; break;
-      case 'SALT_FLAT': r = 0.42; g = 0.41; b = 0.38; break;
-      case 'TOXIC_VEIL': r = 0.16; g = 0.15; b = 0.10; break;
-      case 'REMNANT_SOIL': r = 0.13; g = 0.115; b = 0.095; break;
-      case 'PETRIFIED_MEGAFLORA': r = 0.10; g = 0.095; b = 0.085; break;
-      case 'FOUNDRY_RUIN': r = 0.125; g = 0.105; b = 0.095; break;
-      case 'FOSSIL_STRATA': r = 0.135; g = 0.12; b = 0.105; break;
-      case 'CRUSTAL_VENT': r = 0.15; g = 0.09; b = 0.075; break;
-      case 'SHATTERED_BASALT': r = 0.085; g = 0.082; b = 0.085; break;
-    }
+    let r = this.baseR, g = this.baseG, b = this.baseB;
 
     // Oxidation mottling.
     const ox = smoothstep(0.45, 0.8, v);

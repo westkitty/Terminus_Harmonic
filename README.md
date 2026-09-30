@@ -156,10 +156,10 @@ Everything below was run in this workspace:
 
 | Check | Result |
 |---|---|
-| `npm run verify` | green — typecheck, canon gate, 161 tests |
-| Canon gate | 48 files, 18,606 lines, 11 prohibitions, 8 required locks |
-| `npx vitest run` | 161 passed across 15 files |
-| `npm run build` | 2.40 kB html · 234.06 kB js · 484.12 kB three chunk · 21.41 kB css |
+| `npm run verify` | green — typecheck, canon gate, 164 tests |
+| Canon gate | 49 files, 19,251 lines, 11 prohibitions, 8 required locks |
+| `npx vitest run` | 164 passed across 16 files |
+| `npm run build` | 2.40 kB html · 238.66 kB js · 484.12 kB three chunk · 21.41 kB css |
 | Production preview | every route HTTP 200, hashed assets as `text/javascript` |
 | Dev server | HTTP 200 on the preview host |
 | `node --check public/sw.js` | parses as plain JavaScript |
@@ -205,6 +205,11 @@ Two suites exist because the things they cover were asserted but unproven:
   Polar Scope, the 3D-projected globe reticle callout, the Settlement & Module
   Ledger, `varSense`-aware briefing forecast polarity, lock-reason banners, and
   ECS/UI rebinding across `newWorld()`.
+- `tests/perf.test.ts` benchmarks and enforces regression guardrails across cold
+  startup, cold/warm 7-mode overlay cycling, 300-frame MACRO and SECTOR loops,
+  120-frame ORBIT and SECTOR descent transitions, `CommandGlobe` construction
+  and state repaints, `TerrainRenderer` far/ring/chunk streaming, and repeated
+  descent/ascent stress cycles.
 
 ### What is *not* verified
 

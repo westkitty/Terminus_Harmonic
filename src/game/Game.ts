@@ -180,7 +180,7 @@ export class Game {
     this.logistics = new LogisticsSystem(this.planetary, this.settlements);
     this.harmonic = new HarmonicSystem(this.planetary, this.spires);
 
-    this.globe = new CommandGlobe(WORLD_SEED, 100);
+    this.globe = new CommandGlobe(WORLD_SEED, 100, 'ATMOSPHERE');
     this.skyMacro = new SkyDome(40000);
     this.skyOrbit = new SkyDome(2.4e7);
     this.skySector = new SkyDome(9000);
@@ -518,18 +518,43 @@ export class Game {
     }
   }
 
+  private markerStatusMap: Record<string, 'LOCKED' | 'AVAILABLE' | 'ACTIVE' | 'RESOLVED'> = {};
+  private markerProgressMap: Record<string, number> = {};
+  private spireFunctionalFlags: boolean[] = [];
+  private lastMacroUiTime = -Infinity;
+  private lastScopeSpireId = -1;
+
   private updateScale(dt: number, now: number): void {
     const s = this.scale.scale;
     if (s === 'MACRO') {
       this.scale.updateMacroCamera(dt);
-      this.globe.setPlanetaryState(this.planetary.snapshot(), now, this.scale.inTransition);
+      this.globe.setPlanetaryState(
+        {
+          vars: this.planetary.vars,
+          baselines: this.planetary.baselines,
+          tick: this.planetary.tick,
+          simTime: this.planetary.simTime,
+        },
+        now,
+        false,
+      );
       this.globe.update(dt);
+      const crises = this.crises.all();
+      for (let i = 0; i < crises.length; i++) {
+        const c = crises[i];
+        this.markerStatusMap[c.def.id] = c.status;
+        this.markerProgressMap[c.def.id] = this.crisisProgress(c);
+      }
+      this.spireFunctionalFlags.length = this.spires.length;
+      for (let i = 0; i < this.spires.length; i++) {
+        this.spireFunctionalFlags[i] = this.spires[i].functional;
+      }
       this.globe.updateMarkers(
         now,
         dt,
-        Object.fromEntries(this.crises.all().map((c) => [c.def.id, c.status])),
-        Object.fromEntries(this.crises.all().map((c) => [c.def.id, this.crisisProgress(c)])),
-        this.spires.map((x) => x.functional),
+        this.markerStatusMap,
+        this.markerProgressMap,
+        this.spireFunctionalFlags,
         this.harmonic.phases,
       );
       this.skyMacro.setSun(this._sunDir);
@@ -537,18 +562,20 @@ export class Game {
       this.skyMacro.follow(this.scale.cameras.MACRO);
       this.globe.setSunDirection(this._sunDir);
       this.globe.setAtmosphereToxicity(this.planetary.vars.atmosphereToxicity);
-      this.ui.updateMacro(this.planetary, now);
-      this.ui.setCrises(this.crises.all(), this.selectedNodeId);
-      this.ui.updateHarmonicScope(
-        this.spires,
-        this.harmonic.phases,
-        this.harmonic.locks,
-        this.harmonic.refPhase,
-        this.harmonic.coverage,
-        this.harmonic.phaseOrder,
-        this.selectedSpireId,
-      );
-      this.ui.updateLedger(this.settlements, this.save.campaign.unlockedModules);
+      if (now - this.lastMacroUiTime >= 66 || this.selectedSpireId !== this.lastScopeSpireId) {
+        this.lastMacroUiTime = now;
+        this.lastScopeSpireId = this.selectedSpireId;
+        this.ui.updateHarmonicScope(
+          this.spires,
+          this.harmonic.phases,
+          this.harmonic.locks,
+          this.harmonic.refPhase,
+          this.harmonic.coverage,
+          this.harmonic.phaseOrder,
+          this.selectedSpireId,
+        );
+        this.ui.updateLedger(this.settlements, this.save.campaign.unlockedModules);
+      }
       this.updateMacroReticle();
       return;
     }
@@ -842,46 +869,59 @@ export class Game {
     const savedTunnels = this.crises.tunnelData.get(def.id);
     if (savedTunnels) this.sectorLattice.restore(savedTunnels);
 
-    this.sectorTerrain = new TerrainRenderer(this.sectorField);
-    this.scale.scenes.SECTOR.add(this.sectorTerrain.group);
+    const isOrbitScale = this.scale.scale === 'ORBIT' || (def.vehicle === 'ORBITAL_SKIFF' && def.domain === 'ORBIT');
 
-    this.sectorEnv = new SectorEnvironment(this.sectorField, {
-      shadows: this.quality.shadowsEnabled,
-      shadowMapSize: this.quality.shadowMapSize,
-      particleScale: this.quality.particleScale,
-    });
-    this.scale.scenes.SECTOR.add(this.sectorEnv.group);
+    // Sector sun direction: carried from the macro sun, projected onto the node
+    // normal, so the lighting is continuous across the transition.
+    const nodeNormal = latLonToVec3(def.lat, def.lon, 1, [0, 0, 0]);
+    this._sectorSunDir.set(nodeNormal[0], nodeNormal[1], nodeNormal[2]);
+    const sunComponent = this._sunDir.dot(this._sectorSunDir);
+    this._sectorSunDir.multiplyScalar(sunComponent).addScaledVector(this._sunDir, 1 - sunComponent).normalize();
+    if (this._sectorSunDir.y < 0.12) this._sectorSunDir.y = 0.12;
+    this._sectorSunDir.normalize();
 
-    // Hazard fluids where the biome justifies them.
-    const hazard = hazardForBiome(biome);
-    if (hazard) {
-      let s = (WORLD_SEED ^ def.lat * 977) >>> 0;
-      const rnd = (): number => {
-        s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-        return s / 4294967296;
-      };
-      for (let i = 0; i < 4; i++) {
-        this.sectorEnv.addHazardFluid(
-          (rnd() - 0.5) * 1400,
-          (rnd() - 0.5) * 1400,
-          60 + rnd() * 190,
-          hazard,
-        );
+    if (!isOrbitScale) {
+      this.sectorTerrain = new TerrainRenderer(this.sectorField);
+      this.scale.scenes.SECTOR.add(this.sectorTerrain.group);
+
+      this.sectorEnv = new SectorEnvironment(this.sectorField, {
+        shadows: this.quality.shadowsEnabled,
+        shadowMapSize: this.quality.shadowMapSize,
+        particleScale: this.quality.particleScale,
+      });
+      this.scale.scenes.SECTOR.add(this.sectorEnv.group);
+
+      // Hazard fluids where the biome justifies them.
+      const hazard = hazardForBiome(biome);
+      if (hazard) {
+        let s = (WORLD_SEED ^ def.lat * 977) >>> 0;
+        const rnd = (): number => {
+          s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+          return s / 4294967296;
+        };
+        for (let i = 0; i < 4; i++) {
+          this.sectorEnv.addHazardFluid(
+            (rnd() - 0.5) * 1400,
+            (rnd() - 0.5) * 1400,
+            60 + rnd() * 190,
+            hazard,
+          );
+        }
       }
-    }
 
-    // Spires near this sector.
-    const spireIds: number[] = [];
-    for (const sp of ACOUSTIC_SPIRES) {
-      const dLat = sp.lat - def.lat;
-      const dLon = sp.lon - def.lon;
-      if (Math.hypot(dLat, dLon * Math.cos(def.lat * DEG2RAD)) < 12) spireIds.push(sp.id);
+      // Spires near this sector.
+      const spireIds: number[] = [];
+      for (const sp of ACOUSTIC_SPIRES) {
+        const dLat = sp.lat - def.lat;
+        const dLon = sp.lon - def.lon;
+        if (Math.hypot(dLat, dLon * Math.cos(def.lat * DEG2RAD)) < 12) spireIds.push(sp.id);
+      }
+      if (spireIds.length === 0) spireIds.push(0);
+      this.sectorEnv.buildSpires(spireIds, this.spires.map((x) => x.functional));
+      this.sectorEnv.setSunDirection(this._sectorSunDir);
     }
-    if (spireIds.length === 0) spireIds.push(0);
-    this.sectorEnv.buildSpires(spireIds, this.spires.map((x) => x.functional));
 
     // Vehicle.
-    const isOrbitScale = this.scale.scale === 'ORBIT' || (def.vehicle === 'ORBITAL_SKIFF' && def.domain === 'ORBIT');
     const vehicle = this.getOrCreateVehicle(def.vehicle);
     const spawnY =
       def.vehicle === 'ORBITAL_SKIFF'
@@ -894,16 +934,6 @@ export class Game {
     targetScene.add(vehicle.object3D, vehicle.worldGroup);
     this.activeVehicle = vehicle;
     this.possessionSystem.possess(vehicle);
-
-    // Sector sun direction: carried from the macro sun, projected onto the node
-    // normal, so the lighting is continuous across the transition.
-    const nodeNormal = latLonToVec3(def.lat, def.lon, 1, [0, 0, 0]);
-    this._sectorSunDir.set(nodeNormal[0], nodeNormal[1], nodeNormal[2]);
-    const sunComponent = this._sunDir.dot(this._sectorSunDir);
-    this._sectorSunDir.multiplyScalar(sunComponent).addScaledVector(this._sunDir, 1 - sunComponent).normalize();
-    if (this._sectorSunDir.y < 0.12) this._sectorSunDir.y = 0.12;
-    this._sectorSunDir.normalize();
-    this.sectorEnv.setSunDirection(this._sectorSunDir);
 
     // Sector-local wind.
     this.envWind = this._v2.set(this.weather.wind.x, 0, this.weather.wind.z).clone();
@@ -939,7 +969,7 @@ export class Game {
     }
 
     this.registerObjectiveHooks(vehicle);
-    this.sectorTerrain.update(0, 0, 8);
+    this.sectorTerrain?.update(0, 0, 1);
   }
 
   private envWind = new THREE.Vector3();

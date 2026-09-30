@@ -18,9 +18,9 @@ import type { SectorField } from './field';
 
 const CHUNK = 160;
 const RINGS = 6;
-const RING_SEGMENTS = [40, 32, 24, 16, 12, 8];
+const RING_SEGMENTS = [40, 24, 16, 12, 8, 6];
 const FAR_RADIUS = 9000;
-const FAR_SEGMENTS = 96;
+const FAR_SEGMENTS = 48;
 
 interface RingBatch {
   mesh: THREE.Mesh;
@@ -41,32 +41,41 @@ function ringChunkOffsets(ring: number): [number, number][] {
   return out;
 }
 
+const RING_OFFSETS: readonly [number, number][][] = Array.from({ length: RINGS }, (_, r) => ringChunkOffsets(r));
+
 /** Build a merged grid geometry covering the given chunk offsets at `segments`. */
 function buildRingGeometry(
   field: SectorField,
-  offsets: [number, number][],
+  offsets: readonly [number, number][],
   segments: number,
   centerX: number,
   centerZ: number,
+  ring: number,
 ): { geometry: THREE.BufferGeometry; triangles: number } {
   const step = CHUNK / segments;
+  const inv2Step = 1 / (2 * step);
+  const invStep = 1 / step;
   const cols = segments + 1;
   const perChunkVerts = cols * cols;
   const total = perChunkVerts * offsets.length;
   const positions = new Float32Array(total * 3);
+  const normals = new Float32Array(total * 3);
   const colors = new Float32Array(total * 3);
   const indices = new Uint32Array(offsets.length * segments * segments * 6);
   const c: [number, number, number] = [0, 0, 0];
 
   let vBase = 0;
   let iBase = 0;
-  for (const [ox, oz] of offsets) {
+  for (let oi = 0; oi < offsets.length; oi++) {
+    const ox = offsets[oi][0];
+    const oz = offsets[oi][1];
     const bx = centerX + ox * CHUNK;
     const bz = centerZ + oz * CHUNK;
+    const start = vBase;
     for (let iz = 0; iz < cols; iz++) {
+      const z = bz + iz * step;
       for (let ix = 0; ix < cols; ix++) {
         const x = bx + ix * step;
-        const z = bz + iz * step;
         const y = field.elevation(x, z);
         const i3 = vBase * 3;
         positions[i3] = x;
@@ -79,10 +88,35 @@ function buildRingGeometry(
         vBase++;
       }
     }
-    const start = vBase - perChunkVerts;
+    // Analytic heightfield grid normals from finite differences on the chunk grid.
+    for (let iz = 0; iz < cols; iz++) {
+      const rowOff = start + iz * cols;
+      const iz0 = iz > 0 ? iz - 1 : 0;
+      const iz1 = iz < segments ? iz + 1 : segments;
+      const dzScale = iz > 0 && iz < segments ? inv2Step : invStep;
+      const rowU = start + iz0 * cols;
+      const rowD = start + iz1 * cols;
+      for (let ix = 0; ix < cols; ix++) {
+        const ix0 = ix > 0 ? ix - 1 : 0;
+        const ix1 = ix < segments ? ix + 1 : segments;
+        const dxScale = ix > 0 && ix < segments ? inv2Step : invStep;
+        const hL = positions[(rowOff + ix0) * 3 + 1];
+        const hR = positions[(rowOff + ix1) * 3 + 1];
+        const hU = positions[(rowU + ix) * 3 + 1];
+        const hD = positions[(rowD + ix) * 3 + 1];
+        const nx = (hL - hR) * dxScale;
+        const nz = (hU - hD) * dzScale;
+        const invLen = 1 / Math.sqrt(nx * nx + 1 + nz * nz);
+        const n3 = (rowOff + ix) * 3;
+        normals[n3] = nx * invLen;
+        normals[n3 + 1] = invLen;
+        normals[n3 + 2] = nz * invLen;
+      }
+    }
     for (let iz = 0; iz < segments; iz++) {
+      const rowStart = start + iz * cols;
       for (let ix = 0; ix < segments; ix++) {
-        const a = start + iz * cols + ix;
+        const a = rowStart + ix;
         const b = a + 1;
         const d = a + cols;
         const e = d + 1;
@@ -98,10 +132,13 @@ function buildRingGeometry(
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
-  geo.computeVertexNormals();
-  geo.computeBoundingSphere();
+  geo.boundingSphere = new THREE.Sphere(
+    new THREE.Vector3(centerX, 0, centerZ),
+    (ring + 1) * CHUNK * Math.SQRT2 + 600,
+  );
   return { geometry: geo, triangles: (indices.length / 3) | 0 };
 }
 
@@ -159,22 +196,31 @@ export class TerrainRenderer {
     const seg = FAR_SEGMENTS;
     const cols = seg + 1;
     const positions = new Float32Array(cols * cols * 3);
+    const normals = new Float32Array(cols * cols * 3);
     const colors = new Float32Array(cols * cols * 3);
     const indices = new Uint32Array(seg * seg * 6);
     const c: [number, number, number] = [0, 0, 0];
+    const cosAng = new Float32Array(cols);
+    const sinAng = new Float32Array(cols);
+    for (let ix = 0; ix < cols; ix++) {
+      const ang = (ix / seg) * Math.PI * 2;
+      cosAng[ix] = Math.cos(ang);
+      sinAng[ix] = Math.sin(ang);
+    }
     for (let iz = 0; iz < cols; iz++) {
+      const rad = Math.sqrt(iz / seg) * FAR_RADIUS;
+      const row = iz * cols;
       for (let ix = 0; ix < cols; ix++) {
-        const t = ix / seg;
-        const u = iz / seg;
-        const ang = t * Math.PI * 2;
-        const rad = Math.sqrt(u) * FAR_RADIUS;
-        const x = Math.cos(ang) * rad;
-        const z = Math.sin(ang) * rad;
+        const x = cosAng[ix] * rad;
+        const z = sinAng[ix] * rad;
         const y = this.field.elevation(x, z) * 0.85;
-        const i3 = (iz * cols + ix) * 3;
+        const i3 = (row + ix) * 3;
         positions[i3] = x;
         positions[i3 + 1] = y;
         positions[i3 + 2] = z;
+        normals[i3] = 0;
+        normals[i3 + 1] = 1;
+        normals[i3 + 2] = 0;
         this.field.color(x, z, c);
         colors[i3] = c[0];
         colors[i3 + 1] = c[1];
@@ -183,8 +229,9 @@ export class TerrainRenderer {
     }
     let iBase = 0;
     for (let iz = 0; iz < seg; iz++) {
+      const row = iz * cols;
       for (let ix = 0; ix < seg; ix++) {
-        const a = iz * cols + ix;
+        const a = row + ix;
         const b = a + 1;
         const d = a + cols;
         const e = d + 1;
@@ -198,10 +245,10 @@ export class TerrainRenderer {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.setIndex(new THREE.BufferAttribute(indices, 1));
-    geo.computeVertexNormals();
-    geo.computeBoundingSphere();
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), FAR_RADIUS + 600);
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.name = 'terrain-far';
     mesh.matrixAutoUpdate = false;
@@ -234,7 +281,7 @@ export class TerrainRenderer {
 
   private buildRing(r: number): void {
     const batch = this.rings[r];
-    const offsets = ringChunkOffsets(r);
+    const offsets = RING_OFFSETS[r];
     const segments = RING_SEGMENTS[Math.min(r, RING_SEGMENTS.length - 1)];
     const { geometry, triangles } = buildRingGeometry(
       this.field,
@@ -242,6 +289,7 @@ export class TerrainRenderer {
       segments,
       this.centerX * CHUNK,
       this.centerZ * CHUNK,
+      r,
     );
     const old = batch.mesh.geometry;
     batch.mesh.geometry = geometry;

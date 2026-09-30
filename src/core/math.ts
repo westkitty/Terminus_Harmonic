@@ -147,11 +147,50 @@ export function createRng(seed: number): Rng {
   };
 }
 
+/** Deterministic value noise in 2D, smoothed. Used for 2D (x, z) height/colour fields. */
+export function valueNoise2(x: number, z: number, seed: number): number {
+  const xi = Math.floor(x);
+  const zi = Math.floor(z);
+  const xf = x - xi;
+  const zf = z - zi;
+  const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
+  const w = zf * zf * zf * (zf * (zf * 6 - 15) + 10);
+  const c00 = hash2(xi, zi, seed);
+  const c10 = hash2(xi + 1, zi, seed);
+  const c01 = hash2(xi, zi + 1, seed);
+  const c11 = hash2(xi + 1, zi + 1, seed);
+  const x0 = c00 + (c10 - c00) * u;
+  const x1 = c01 + (c11 - c01) * u;
+  return x0 + (x1 - x0) * w;
+}
+
+function hash2(x: number, z: number, seed: number): number {
+  let h = seed >>> 0;
+  h = Math.imul(h ^ (x | 0), 0x27d4eb2d) >>> 0;
+  h = Math.imul(h ^ (z | 0), 0x9e3779b1) >>> 0;
+  h = (h ^ (h >>> 15)) >>> 0;
+  return h / 4294967296;
+}
+
+/** Fractal Brownian motion over {@link valueNoise2} with pre-mixed octave seeds. */
+export function fbm2Seeds(x: number, z: number, seeds: readonly number[], lacunarity = 2, gain = 0.5): number {
+  let amp = 1, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < seeds.length; i++) {
+    sum += amp * valueNoise2(x * freq, z * freq, seeds[i]);
+    norm += amp;
+    amp *= gain;
+    freq *= lacunarity;
+  }
+  return sum / norm;
+}
+
 /** Deterministic value noise in 3D, smoothed. Used for terrain/biome fields. */
 export function valueNoise3(x: number, y: number, z: number, seed: number): number {
   const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
   const xf = x - xi, yf = y - yi, zf = z - zi;
-  const u = smootherstep(0, 1, xf), v = smootherstep(0, 1, yf), w = smootherstep(0, 1, zf);
+  const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
+  const v = yf * yf * yf * (yf * (yf * 6 - 15) + 10);
+  const w = zf * zf * zf * (zf * (zf * 6 - 15) + 10);
   const c000 = hash3(xi, yi, zi, seed);
   const c100 = hash3(xi + 1, yi, zi, seed);
   const c010 = hash3(xi, yi + 1, zi, seed);
@@ -160,11 +199,13 @@ export function valueNoise3(x: number, y: number, z: number, seed: number): numb
   const c101 = hash3(xi + 1, yi, zi + 1, seed);
   const c011 = hash3(xi, yi + 1, zi + 1, seed);
   const c111 = hash3(xi + 1, yi + 1, zi + 1, seed);
-  const x00 = lerp(c000, c100, u);
-  const x10 = lerp(c010, c110, u);
-  const x01 = lerp(c001, c101, u);
-  const x11 = lerp(c011, c111, u);
-  return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w);
+  const x00 = c000 + (c100 - c000) * u;
+  const x10 = c010 + (c110 - c010) * u;
+  const x01 = c001 + (c101 - c001) * u;
+  const x11 = c011 + (c111 - c011) * u;
+  const y0 = x00 + (x10 - x00) * v;
+  const y1 = x01 + (x11 - x01) * v;
+  return y0 + (y1 - y0) * w;
 }
 
 function hash3(x: number, y: number, z: number, seed: number): number {

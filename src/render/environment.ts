@@ -187,7 +187,6 @@ export class SectorEnvironment {
       s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
       return s / 4294967296;
     };
-    const dummy = new THREE.Object3D();
     let total = 0;
     for (const cls of classes) {
       const count = Math.max(8, Math.round(cls.count * clamp01(particleScale)));
@@ -196,19 +195,44 @@ export class SectorEnvironment {
       inst.castShadow = true;
       inst.receiveShadow = true;
       inst.name = 'scatter';
+      const matArr = inst.instanceMatrix.array as Float32Array;
       for (let i = 0; i < count; i++) {
         // Bias toward the playable centre; thin out toward the horizon.
         const r = Math.sqrt(rnd()) * 900;
         const a = rnd() * Math.PI * 2;
-        const x = Math.cos(a) * r;
-        const z = Math.sin(a) * r;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        const x = ca * r;
+        const z = sa * r;
         const y = this.field.elevation(x, z);
-        dummy.position.set(x, y + cls.scale[0] * 0.35, z);
-        dummy.rotation.set(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28);
+        const yaw = rnd() * 6.2831853;
+        const cy = Math.cos(yaw);
+        const sy = Math.sin(yaw);
+        const _rx = rnd();
+        const _rz = rnd();
+        void _rx;
+        void _rz;
         const sc = cls.scale[0] + rnd() * (cls.scale[1] - cls.scale[0]);
-        dummy.scale.set(sc, sc * (0.6 + rnd() * 0.9), sc * (0.6 + rnd() * 0.9));
-        dummy.updateMatrix();
-        inst.setMatrixAt(i, dummy.matrix);
+        const sx = sc;
+        const sY = sc * (0.6 + rnd() * 0.9);
+        const sz = sc * (0.6 + rnd() * 0.9);
+        const o = i * 16;
+        matArr[o] = cy * sx;
+        matArr[o + 1] = 0;
+        matArr[o + 2] = sy * sx;
+        matArr[o + 3] = 0;
+        matArr[o + 4] = 0;
+        matArr[o + 5] = sY;
+        matArr[o + 6] = 0;
+        matArr[o + 7] = 0;
+        matArr[o + 8] = -sy * sz;
+        matArr[o + 9] = 0;
+        matArr[o + 10] = cy * sz;
+        matArr[o + 11] = 0;
+        matArr[o + 12] = x;
+        matArr[o + 13] = y + cls.scale[0] * 0.35;
+        matArr[o + 14] = z;
+        matArr[o + 15] = 1;
       }
       inst.instanceMatrix.needsUpdate = true;
       inst.frustumCulled = false;

@@ -90,19 +90,27 @@ export const OVERLAY_LEGEND: Record<OverlayMode, { label: string; low: string; h
 class PlanetFields {
   private sA: number;
   private sB: number;
+  private sB31: number;
+  private fieldSeeds = new Map<number, number>();
   constructor(seed: number) {
     this.sA = mixSeed(seed, 0x1a2b3c4d);
     this.sB = mixSeed(seed, 0x5e6f7a8b);
+    this.sB31 = mixSeed(this.sB, 31);
   }
   /** Scalar field on the unit sphere. */
   field(x: number, y: number, z: number, which: number, freq = 2.2): number {
-    return fbm3(x * freq, y * freq, z * freq, mixSeed(this.sA, which * 7919), 4);
+    let s = this.fieldSeeds.get(which);
+    if (s === undefined) {
+      s = mixSeed(this.sA, which * 7919);
+      this.fieldSeeds.set(which, s);
+    }
+    return fbm3(x * freq, y * freq, z * freq, s, 3);
   }
   /** Ridged fault network. */
   faults(x: number, y: number, z: number): number {
     const a = Math.abs(valueNoise3(x * 3.1, y * 3.1 + 4.2, z * 3.1, this.sB) - 0.5);
-    const b = Math.abs(valueNoise3(x * 2.3 + 9.1, y * 2.3, z * 2.3, mixSeed(this.sB, 31)) - 0.5);
-    return Math.min(a, b);
+    const b = Math.abs(valueNoise3(x * 2.3 + 9.1, y * 2.3, z * 2.3, this.sB31) - 0.5);
+    return a < b ? a : b;
   }
   /** Broad continent/landmass mask. */
   continents(x: number, y: number, z: number): number {
@@ -144,21 +152,24 @@ export class CommandGlobe {
   private atmosphereMesh: THREE.Mesh;
   private overlayTexture: THREE.DataTexture;
   private overlayCanvas: Uint8Array;
+  private overlayWords: Uint32Array;
   private fields: PlanetFields;
   /**
    * The overlay texture is 1024x512 equirectangular pixels, and each pixel used
-   * to cost several fbm noise evaluations. Painting it on the main thread
-   * blocked for ~0.6 s, which is most of a frame budget at 60 Hz.
+   * to cost several fbm noise evaluations.
    *
-   * The expensive part of the field is *static* — the noise depends only on the
-   * world seed and the overlay mode, never on the planetary state. So the noise
-   * is evaluated once per mode into `staticField`, and every repaint only does
-   * the cheap state-dependent arithmetic on top of it. Trigonometry for the
-   * pixel grid is likewise precomputed once.
+   * The seed-only noise is evaluated once per mode on the 256x128 coarse grid
+   * and cached in `coarseByMode`. On each repaint, the state-dependent colour
+   * and severity equations run on the 32,768 coarse cells (16x fewer than the
+   * 524,288 texture pixels), and the resulting (r, g, b, banding) field is
+   * bilinearly upsampled into the 1024x512 texture while applying the
+   * high-resolution accessibility stripe graticule.
    */
-  private staticField: Float32Array | null = null;
-  private coarseField: Float32Array;
-  private staticMode: OverlayMode | null = null;
+  private coarseByMode = new Map<OverlayMode, Float32Array>();
+  private coarseColorBanding: Float32Array;
+  private readonly coarseNx: Float32Array;
+  private readonly coarseNy: Float32Array;
+  private readonly coarseNz: Float32Array;
   /** Upsample index/weight tables, built once. */
   private readonly upX0: Int32Array;
   private readonly upX1: Int32Array;
@@ -172,6 +183,9 @@ export class CommandGlobe {
   private readonly colSin: Float32Array;
   private readonly rowPhaseSin: Float32Array;
   private readonly rowPhaseCos: Float32Array;
+  private lastPaintedVars: Record<string, number> | null = null;
+  private readonly _camDir = new THREE.Vector3();
+  private readonly _surfDir = new THREE.Vector3();
 
   private markerGroup = new THREE.Group();
   private spireGroup = new THREE.Group();
@@ -180,8 +194,11 @@ export class CommandGlobe {
   private settlementGroup = new THREE.Group();
 
   private markerMeshes: THREE.Mesh[] = [];
+  private markerById = new Map<string, THREE.Mesh>();
   private markerRings: THREE.Mesh[] = [];
   private spireMeshes: THREE.Mesh[] = [];
+  private spireById = new Map<number, THREE.Mesh>();
+  private pickTargets: THREE.Mesh[] = [];
   private settlementMeshes: THREE.Mesh[] = [];
   private debrisMesh: THREE.InstancedMesh | null = null;
   private routeLines: THREE.LineSegments | null = null;
@@ -199,12 +216,13 @@ export class CommandGlobe {
   onNodeClick: ((id: string) => void) | null = null;
   onNodeHover: ((id: string | null) => void) | null = null;
 
-  constructor(seed: number, radius = 100) {
+  constructor(seed: number, radius = 100, initialOverlay: OverlayMode = 'TOPOGRAPHY') {
     this.planetRadius = radius;
+    this.overlay = initialOverlay;
     this.fields = new PlanetFields(seed);
 
     // --- planet body -----------------------------------------------------
-    const detail = 6; // 40962 vertices
+    const detail = 6;
     this.planetGeometry = new THREE.IcosahedronGeometry(radius, detail);
     this.displacePlanet();
     this.planetMaterial = new THREE.MeshStandardMaterial({
@@ -237,7 +255,24 @@ export class CommandGlobe {
       this.colSin[x] = Math.sin(theta);
     }
 
-    this.coarseField = new Float32Array(STATIC_W * STATIC_H * 3);
+    this.coarseColorBanding = new Float32Array(STATIC_W * STATIC_H * 4);
+    this.coarseNx = new Float32Array(STATIC_W * STATIC_H);
+    this.coarseNy = new Float32Array(STATIC_W * STATIC_H);
+    this.coarseNz = new Float32Array(STATIC_W * STATIC_H);
+    for (let y = 0; y < STATIC_H; y++) {
+      const phi = (90 - (y / (STATIC_H - 1)) * 180) * DEG2RAD;
+      const cp = Math.cos(phi);
+      const sp = Math.sin(phi);
+      const row = y * STATIC_W;
+      for (let x = 0; x < STATIC_W; x++) {
+        const theta = ((x / STATIC_W) * 360 - 180) * DEG2RAD;
+        const idx = row + x;
+        this.coarseNx[idx] = cp * Math.cos(theta);
+        this.coarseNy[idx] = sp;
+        this.coarseNz[idx] = cp * Math.sin(theta);
+      }
+    }
+
     this.upX0 = new Int32Array(TEXTURE_W);
     this.upX1 = new Int32Array(TEXTURE_W);
     this.upFx = new Float32Array(TEXTURE_W);
@@ -261,6 +296,7 @@ export class CommandGlobe {
     }
 
     this.overlayCanvas = new Uint8Array(TEXTURE_W * TEXTURE_H * 4);
+    this.overlayWords = new Uint32Array(this.overlayCanvas.buffer);
     this.overlayTexture = new THREE.DataTexture(
       this.overlayCanvas as unknown as Uint8Array<ArrayBuffer>,
       TEXTURE_W,
@@ -335,10 +371,11 @@ export class CommandGlobe {
 
     this.buildMarkers();
     this.buildSpires();
+    this.pickTargets = [...this.markerMeshes, ...this.spireMeshes];
     this.buildSettlements();
     this.buildDebris();
     this.buildRoutes();
-    this.paintOverlay();
+    this.overlayDirty = true;
   }
 
   /** Push terrain scars into the icosphere so the silhouette is wounded. */
@@ -401,123 +438,201 @@ export class CommandGlobe {
 
   /**
    * Evaluate the seed-only part of the field on the coarse grid. Done once per
-   * overlay change; the result is pure geometry + noise, so it never depends on
-   * the planetary state.
+   * overlay mode and cached; the result is pure geometry + noise, so it never
+   * depends on the planetary state.
    */
-  private buildCoarseField(mode: OverlayMode): void {
-    const out = this.coarseField;
+  private getCoarseField(mode: OverlayMode): Float32Array {
+    let out = this.coarseByMode.get(mode);
+    if (out) return out;
+    const total = STATIC_W * STATIC_H;
+    out = new Float32Array(total * 2);
     const f = this.fields;
-    for (let y = 0; y < STATIC_H; y++) {
-      const phi = (90 - (y / (STATIC_H - 1)) * 180) * DEG2RAD;
-      const cp = Math.cos(phi);
-      const sp = Math.sin(phi);
-      const row = y * STATIC_W;
-      for (let x = 0; x < STATIC_W; x++) {
-        // STATIC_W columns span 360 degrees with the seam wrapped, so the last
-        // column and the first are the same meridian and the field is periodic.
-        const theta = ((x / STATIC_W) * 360 - 180) * DEG2RAD;
-        const nx = cp * Math.cos(theta);
-        const ny = sp;
-        const nz = cp * Math.sin(theta);
-        const k = (row + x) * 3;
-        switch (mode) {
-          case 'TOPOGRAPHY':
-            out[k] = f.continents(nx, ny, nz);
-            out[k + 1] = smoothstep(0.55, 0.9, f.field(nx, ny, nz, 7, 1.7));
-            break;
-          case 'ATMOSPHERE':
-            out[k] = f.field(nx, ny, nz, 11, 2.6);
-            out[k + 1] = smoothstep(0.5, 0.95, f.field(nx, ny, nz, 13, 3.8));
-            break;
-          case 'GEOLOGY':
-            out[k] = smoothstep(0.02, 0.14, f.faults(nx, ny, nz));
-            out[k + 1] = f.field(nx, ny, nz, 17, 2.2);
-            break;
-          case 'BIOSPHERE':
-            out[k] = smoothstep(0.45, 0.85, f.field(nx, ny, nz, 19, 2.0));
-            out[k + 1] = f.field(nx, ny, nz, 23, 2.8);
-            break;
-          case 'ORBIT':
-            out[k] = smoothstep(0.45, 0.95, f.field(nx, ny, nz, 29, 1.6));
-            break;
-          case 'LOGISTICS':
-            out[k] = smoothstep(0.3, 0.75, f.field(nx, ny, nz, 31, 1.4));
-            out[k + 1] = smoothstep(0.55, 0.9, f.field(nx, ny, nz, 37, 2.4));
-            break;
-          case 'HARMONIC':
-            out[k] = smoothstep(0.35, 0.8, f.field(nx, ny, nz, 41, 1.9));
-            break;
-          default:
-            break;
-        }
-        out[k + 2] = 0;
+    const cNx = this.coarseNx;
+    const cNy = this.coarseNy;
+    const cNz = this.coarseNz;
+    for (let i = 0; i < total; i++) {
+      const nx = cNx[i];
+      const ny = cNy[i];
+      const nz = cNz[i];
+      const k = i * 2;
+      switch (mode) {
+        case 'TOPOGRAPHY':
+          out[k] = f.continents(nx, ny, nz);
+          out[k + 1] = smoothstep(0.55, 0.9, f.field(nx, ny, nz, 7, 1.7));
+          break;
+        case 'ATMOSPHERE':
+          out[k] = f.field(nx, ny, nz, 11, 2.6);
+          out[k + 1] = smoothstep(0.5, 0.95, f.field(nx, ny, nz, 13, 3.8));
+          break;
+        case 'GEOLOGY':
+          out[k] = smoothstep(0.02, 0.14, f.faults(nx, ny, nz));
+          out[k + 1] = f.field(nx, ny, nz, 17, 2.2);
+          break;
+        case 'BIOSPHERE':
+          out[k] = smoothstep(0.45, 0.85, f.field(nx, ny, nz, 19, 2.0));
+          out[k + 1] = f.field(nx, ny, nz, 23, 2.8);
+          break;
+        case 'ORBIT':
+          out[k] = smoothstep(0.45, 0.95, f.field(nx, ny, nz, 29, 1.6));
+          break;
+        case 'LOGISTICS':
+          out[k] = smoothstep(0.3, 0.75, f.field(nx, ny, nz, 31, 1.4));
+          out[k + 1] = smoothstep(0.55, 0.9, f.field(nx, ny, nz, 37, 2.4));
+          break;
+        case 'HARMONIC':
+          out[k] = smoothstep(0.35, 0.8, f.field(nx, ny, nz, 41, 1.9));
+          break;
+        default:
+          break;
       }
     }
-    this.staticMode = mode;
+    this.coarseByMode.set(mode, out);
+    return out;
   }
 
-  /** Bilinearly expand the coarse noise grid to the texture resolution. */
-  private upsampleStatic(): void {
-    if (!this.staticField) this.staticField = new Float32Array(TEXTURE_W * TEXTURE_H * 3);
-    const src = this.coarseField;
-    const dst = this.staticField;
+  /** Repaint the overlay texture. Throttled internally. */
+  private paintOverlay(): void {
+    const mode = this.overlay;
+    const coarse = this.getCoarseField(mode);
+    const cb = this.coarseColorBanding;
+    const totalCoarse = STATIC_W * STATIC_H;
+
+    const vars = this.currentSnapshot ? this.currentSnapshot.vars : null;
+    const atmosphereStability = vars ? vars.atmosphereStability : 0.5;
+    const atmosphereToxicity = vars ? vars.atmosphereToxicity : 0.5;
+    const geothermalPressure = vars ? vars.geothermalPressure : 0.5;
+    const tectonicShear = vars ? vars.tectonicShear : 0.5;
+    const hydrologyStability = vars ? vars.hydrologyStability : 0.5;
+    const soilViability = vars ? vars.soilViability : 0.5;
+    const biosphereViability = vars ? vars.biosphereViability : 0.5;
+    const orbitalOcclusion = vars ? vars.orbitalOcclusion : 0.5;
+    const orbitalSafety = vars ? vars.orbitalSafety : 0.5;
+    const logisticsIntegrity = vars ? vars.logisticsIntegrity : 0.5;
+    const harmonicCoherence = vars ? vars.harmonicCoherence : 0.5;
+
+    this.lastPaintedVars = {
+      atmosphereStability,
+      atmosphereToxicity,
+      geothermalPressure,
+      tectonicShear,
+      hydrologyStability,
+      soilViability,
+      biosphereViability,
+      orbitalOcclusion,
+      orbitalSafety,
+      logisticsIntegrity,
+      harmonicCoherence,
+    };
+
+    // Pass 1: evaluate state-dependent (r, g, b, banding) on the 256x128 coarse grid.
+    switch (mode) {
+      case 'TOPOGRAPHY':
+        for (let i = 0; i < totalCoarse; i++) {
+          const s0 = coarse[i * 2];
+          const vit = coarse[i * 2 + 1];
+          const c4 = i * 4;
+          cb[c4] = 0.09 + s0 * 0.12;
+          cb[c4 + 1] = 0.085 + s0 * 0.1;
+          cb[c4 + 2] = 0.08 + s0 * 0.08 + vit * 0.06;
+          cb[c4 + 3] = vit;
+        }
+        break;
+      case 'ATMOSPHERE':
+        for (let i = 0; i < totalCoarse; i++) {
+          const turb = coarse[i * 2];
+          const shear = coarse[i * 2 + 1];
+          const press = atmosphereStability * (0.7 + turb * 0.5);
+          const toxRaw = atmosphereToxicity * (0.75 + turb * 0.6);
+          const tox = toxRaw < 0 ? 0 : toxRaw > 1 ? 1 : toxRaw;
+          const c4 = i * 4;
+          cb[c4] = tox * 0.85 + shear * 0.35;
+          cb[c4 + 1] = press * 0.42 + (1 - tox) * 0.12;
+          cb[c4 + 2] = press * 0.85 + (1 - tox) * 0.2;
+          cb[c4 + 3] = tox > shear ? tox : shear;
+        }
+        break;
+      case 'GEOLOGY':
+        for (let i = 0; i < totalCoarse; i++) {
+          const fault = coarse[i * 2];
+          const s1 = coarse[i * 2 + 1];
+          const heatRaw = geothermalPressure * (0.6 + s1 * 0.8);
+          const heat = heatRaw < 0 ? 0 : heatRaw > 1 ? 1 : heatRaw;
+          const shRaw = tectonicShear * (0.7 + fault * 0.9);
+          const stab = 1 - (shRaw < 0 ? 0 : shRaw > 1 ? 1 : shRaw);
+          const c4 = i * 4;
+          cb[c4] = fault * 0.9 + heat * 0.9;
+          cb[c4 + 1] = (1 - heat) * 0.3 + stab * 0.2;
+          cb[c4 + 2] = stab * 0.55 + (1 - fault) * 0.15;
+          cb[c4 + 3] = fault > heat ? fault : heat;
+        }
+        break;
+      case 'BIOSPHERE':
+        for (let i = 0; i < totalCoarse; i++) {
+          const water = coarse[i * 2] * hydrologyStability;
+          const s1 = coarse[i * 2 + 1];
+          const soilRaw = soilViability * (0.6 + s1 * 0.8);
+          const soil = soilRaw < 0 ? 0 : soilRaw > 1 ? 1 : soilRaw;
+          const cropRaw = soil * water * biosphereViability;
+          const crop = cropRaw < 0 ? 0 : cropRaw > 1 ? 1 : cropRaw;
+          const c4 = i * 4;
+          cb[c4] = (1 - crop) * 0.3;
+          cb[c4 + 1] = crop * 0.75 + soil * 0.12 + water * 0.1;
+          cb[c4 + 2] = water * 0.55 + (1 - soil) * 0.12;
+          cb[c4 + 3] = 1 - crop;
+        }
+        break;
+      case 'ORBIT':
+        for (let i = 0; i < totalCoarse; i++) {
+          const belt = coarse[i * 2];
+          const debRaw = orbitalOcclusion * (0.5 + belt * 1.1);
+          const debris = debRaw < 0 ? 0 : debRaw > 1 ? 1 : debRaw;
+          const c4 = i * 4;
+          cb[c4] = debris * 0.9;
+          cb[c4 + 1] = orbitalSafety * 0.5;
+          cb[c4 + 2] = 0.1 + debris * 0.25;
+          cb[c4 + 3] = debris;
+        }
+        break;
+      case 'LOGISTICS':
+        for (let i = 0; i < totalCoarse; i++) {
+          const route = coarse[i * 2];
+          const depot = coarse[i * 2 + 1];
+          const intRaw = logisticsIntegrity * (0.4 + route * 1.2);
+          const integrity = intRaw < 0 ? 0 : intRaw > 1 ? 1 : intRaw;
+          const c4 = i * 4;
+          cb[c4] = (1 - integrity) * 0.75;
+          cb[c4 + 1] = integrity * 0.7 + depot * 0.15;
+          cb[c4 + 2] = integrity * 0.35 + depot * 0.35;
+          cb[c4 + 3] = 1 - integrity;
+        }
+        break;
+      case 'HARMONIC':
+        for (let i = 0; i < totalCoarse; i++) {
+          const cov = coarse[i * 2];
+          const cohRaw = harmonicCoherence * (0.4 + cov * 1.3);
+          const coherence = cohRaw < 0 ? 0 : cohRaw > 1 ? 1 : cohRaw;
+          const resRaw = (1 - coherence) * (0.4 + cov * 0.9);
+          const resonance = resRaw < 0 ? 0 : resRaw > 1 ? 1 : resRaw;
+          const c4 = i * 4;
+          cb[c4] = resonance * 0.75;
+          cb[c4 + 1] = coherence * 0.35;
+          // Azure ONLY here — this is the Starsilk-derived diagnostic language.
+          cb[c4 + 2] = 0.15 + coherence * 0.8;
+          cb[c4 + 3] = 1 - coherence;
+        }
+        break;
+      default:
+        break;
+    }
+
+    // Pass 2: bilinearly upsample (r, g, b, banding) to 1024x512 and apply severity stripes.
+    const words = this.overlayWords;
     const upX0 = this.upX0;
     const upX1 = this.upX1;
     const upFx = this.upFx;
     const upY0 = this.upY0;
     const upY1 = this.upY1;
     const upFy = this.upFy;
-    const W = TEXTURE_W;
-    for (let y = 0; y < TEXTURE_H; y++) {
-      const r0 = upY0[y] * STATIC_W;
-      const r1 = upY1[y] * STATIC_W;
-      const ty = upFy[y];
-      const sy = 1 - ty;
-      const row = y * W;
-      for (let x = 0; x < W; x++) {
-        const x0 = upX0[x];
-        const x1 = upX1[x];
-        const tx = upFx[x];
-        const sx = 1 - tx;
-        const a = (r0 + x0) * 3;
-        const b = (r0 + x1) * 3;
-        const c = (r1 + x0) * 3;
-        const d = (r1 + x1) * 3;
-        const k = (row + x) * 3;
-        dst[k] = (src[a] * sx + src[b] * tx) * sy + (src[c] * sx + src[d] * tx) * ty;
-        dst[k + 1] = (src[a + 1] * sx + src[b + 1] * tx) * sy + (src[c + 1] * sx + src[d + 1] * tx) * ty;
-        dst[k + 2] = (src[a + 2] * sx + src[b + 2] * tx) * sy + (src[c + 2] * sx + src[d + 2] * tx) * ty;
-      }
-    }
-  }
-
-  /** Repaint the overlay texture. Throttled internally. */
-  private paintOverlay(): void {
-    const data = this.overlayCanvas;
-    const mode = this.overlay;
-    if (this.staticMode !== mode || !this.staticField) {
-      this.buildCoarseField(mode);
-      this.upsampleStatic();
-    }
-    const sf = this.staticField as Float32Array;
-    // Planetary state is supplied per-paint; use the last supplied snapshot.
-    // Hoisted out of the pixel loop: these eleven values are constant for the
-    // whole repaint, and calling through a closure 524k times was measurable.
-    const vars = this.currentSnapshot ? this.currentSnapshot.vars : null;
-    const S = {
-      atmosphereStability: vars ? vars.atmosphereStability : 0.5,
-      atmosphereToxicity: vars ? vars.atmosphereToxicity : 0.5,
-      geothermalPressure: vars ? vars.geothermalPressure : 0.5,
-      tectonicShear: vars ? vars.tectonicShear : 0.5,
-      hydrologyStability: vars ? vars.hydrologyStability : 0.5,
-      soilViability: vars ? vars.soilViability : 0.5,
-      biosphereViability: vars ? vars.biosphereViability : 0.5,
-      orbitalOcclusion: vars ? vars.orbitalOcclusion : 0.5,
-      orbitalSafety: vars ? vars.orbitalSafety : 0.5,
-      logisticsIntegrity: vars ? vars.logisticsIntegrity : 0.5,
-      harmonicCoherence: vars ? vars.harmonicCoherence : 0.5,
-    };
-
     const colCos = this.colCos;
     const colSin = this.colSin;
     const rowPhaseSin = this.rowPhaseSin;
@@ -526,108 +641,45 @@ export class CommandGlobe {
     const H = TEXTURE_H;
 
     for (let y = 0; y < H; y++) {
-      // sin(y*0.9 + x*0.12) expanded so the inner loop needs no trigonometry.
+      const r0 = upY0[y] * STATIC_W;
+      const r1 = upY1[y] * STATIC_W;
+      const ty = upFy[y];
+      const sy = 1 - ty;
       const pa = rowPhaseSin[y];
       const pb = rowPhaseCos[y];
       const row = y * W;
       for (let x = 0; x < W; x++) {
-        const k = (row + x) * 3;
-        const s0 = sf[k];
-        const s1 = sf[k + 1];
+        const x0 = upX0[x];
+        const x1 = upX1[x];
+        const tx = upFx[x];
+        const sx = 1 - tx;
+        const w00 = sx * sy;
+        const w10 = tx * sy;
+        const w01 = sx * ty;
+        const w11 = tx * ty;
+        const a = (r0 + x0) * 4;
+        const b = (r0 + x1) * 4;
+        const c = (r1 + x0) * 4;
+        const d = (r1 + x1) * 4;
 
-        let r = 0, g = 0, b = 0;
-        let banding = 0; // 0..1 stripe intensity for accessibility
+        let cr = cb[a] * w00 + cb[b] * w10 + cb[c] * w01 + cb[d] * w11;
+        let cg = cb[a + 1] * w00 + cb[b + 1] * w10 + cb[c + 1] * w01 + cb[d + 1] * w11;
+        let cbl = cb[a + 2] * w00 + cb[b + 2] * w10 + cb[c + 2] * w01 + cb[d + 2] * w11;
+        const banding = cb[a + 3] * w00 + cb[b + 3] * w10 + cb[c + 3] * w01 + cb[d + 3] * w11;
 
-        switch (mode) {
-          case 'TOPOGRAPHY': {
-            const vit = s1;
-            r = 0.09 + s0 * 0.12;
-            g = 0.085 + s0 * 0.1;
-            b = 0.08 + s0 * 0.08 + vit * 0.06;
-            banding = vit;
-            break;
+        if (banding > 0.02) {
+          const phase = pa * colCos[x] + pb * colSin[x];
+          if (phase > 1 - banding * 0.9) {
+            cr = cr * 0.55 + 0.35;
+            cg = cg * 0.55 + 0.35;
+            cbl = cbl * 0.55 + 0.35;
           }
-          case 'ATMOSPHERE': {
-            const turb = s0;
-            const shear = s1;
-            const press = S.atmosphereStability * (0.7 + turb * 0.5);
-            const tox = clamp01(S.atmosphereToxicity * (0.75 + turb * 0.6));
-            // Blue = pressure, magenta-ish = toxicity, white streaks = shear.
-            r = tox * 0.85 + shear * 0.35;
-            g = press * 0.42 + (1 - tox) * 0.12;
-            b = press * 0.85 + (1 - tox) * 0.2;
-            banding = Math.max(tox, shear);
-            break;
-          }
-          case 'GEOLOGY': {
-            const fault = s0;
-            const heat = clamp01(S.geothermalPressure * (0.6 + s1 * 0.8));
-            const stab = 1 - clamp01(S.tectonicShear * (0.7 + fault * 0.9));
-            r = fault * 0.9 + heat * 0.9;
-            g = (1 - heat) * 0.3 + stab * 0.2;
-            b = stab * 0.55 + (1 - fault) * 0.15;
-            banding = Math.max(fault, heat);
-            break;
-          }
-          case 'BIOSPHERE': {
-            const water = s0 * S.hydrologyStability;
-            const soil = clamp01(S.soilViability * (0.6 + s1 * 0.8));
-            const crop = clamp01(soil * water * S.biosphereViability);
-            r = (1 - crop) * 0.3;
-            g = crop * 0.75 + soil * 0.12 + water * 0.1;
-            b = water * 0.55 + (1 - soil) * 0.12;
-            banding = 1 - crop;
-            break;
-          }
-          case 'ORBIT': {
-            const belt = s0;
-            const debris = clamp01(S.orbitalOcclusion * (0.5 + belt * 1.1));
-            const corridor = S.orbitalSafety;
-            r = debris * 0.9;
-            g = corridor * 0.5;
-            b = 0.1 + debris * 0.25;
-            banding = debris;
-            break;
-          }
-          case 'LOGISTICS': {
-            const route = s0;
-            const integrity = clamp01(S.logisticsIntegrity * (0.4 + route * 1.2));
-            const depot = s1;
-            r = (1 - integrity) * 0.75;
-            g = integrity * 0.7 + depot * 0.15;
-            b = integrity * 0.35 + depot * 0.35;
-            banding = 1 - integrity;
-            break;
-          }
-          case 'HARMONIC': {
-            const cov = s0;
-            const coherence = clamp01(S.harmonicCoherence * (0.4 + cov * 1.3));
-            const resonance = clamp01((1 - coherence) * (0.4 + cov * 0.9));
-            r = resonance * 0.75;
-            g = coherence * 0.35;
-            // Azure ONLY here — this is the Starsilk-derived diagnostic language.
-            b = 0.15 + coherence * 0.8;
-            banding = 1 - coherence;
-            break;
-          }
-          default:
-            break;
         }
 
-        // Severity banding: horizontal stripe density rises with the value so
-        // the overlay is legible without colour perception.
-        const phase = pa * colCos[x] + pb * colSin[x];
-        const stripe = banding > 0.02 && phase > 1 - banding * 0.9 ? 1 : 0;
-        r = clamp01(r * (1 - stripe * 0.45) + stripe * 0.35);
-        g = clamp01(g * (1 - stripe * 0.45) + stripe * 0.35);
-        b = clamp01(b * (1 - stripe * 0.45) + stripe * 0.35);
-
-        const i = (row + x) * 4;
-        // (v * 255 + 0.5) | 0 is Math.round(v * 255) without the call overhead.
-        data[i] = (clamp01(r) * 255 + 0.5) | 0;
-        data[i + 1] = (clamp01(g) * 255 + 0.5) | 0;
-        data[i + 2] = (clamp01(b) * 255 + 0.5) | 0;
-        data[i + 3] = 255;
+        const rByte = cr <= 0 ? 0 : cr >= 1 ? 255 : (cr * 255 + 0.5) | 0;
+        const gByte = cg <= 0 ? 0 : cg >= 1 ? 255 : (cg * 255 + 0.5) | 0;
+        const bByte = cbl <= 0 ? 0 : cbl >= 1 ? 255 : (cbl * 255 + 0.5) | 0;
+        words[row + x] = 0xff000000 | (bByte << 16) | (gByte << 8) | rByte;
       }
     }
     this.overlayTexture.needsUpdate = true;
@@ -636,11 +688,28 @@ export class CommandGlobe {
 
   private currentSnapshot: PlanetarySnapshot | null = null;
 
-  /** Feed the authoritative state in; repaints at most a few times a second. */
+  /** Feed the authoritative state in; repaints only when state materially shifts. */
   setPlanetaryState(snapshot: PlanetarySnapshot, now: number, force = false): void {
     this.currentSnapshot = snapshot;
-    if (!force && now - this.lastPaintTime < 350) return;
+    if (force) {
+      this.lastPaintTime = now;
+      this.overlayDirty = true;
+      return;
+    }
+    if (now - this.lastPaintTime < 350) return;
     this.lastPaintTime = now;
+    const prev = this.lastPaintedVars;
+    if (prev && !this.overlayDirty) {
+      const v = snapshot.vars;
+      let changed = false;
+      for (const k of Object.keys(prev)) {
+        if (Math.abs((v as Record<string, number>)[k] - prev[k]) >= 0.002) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return;
+    }
     this.overlayDirty = true;
   }
 
@@ -728,7 +797,7 @@ export class CommandGlobe {
     const inst = new THREE.InstancedMesh(geo, mat, count);
     inst.name = 'orbital-debris';
     inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const dummy = new THREE.Object3D();
+    const matArr = inst.instanceMatrix.array as Float32Array;
     for (let i = 0; i < count; i++) {
       // Deterministic belt distribution.
       const t = i / count;
@@ -742,15 +811,32 @@ export class CommandGlobe {
       const incl = (rr(1) - 0.5) * 0.5;
       const radius = this.planetRadius * (1.09 + rr(2) * 0.16);
       const ang = rr(3) * Math.PI * 2;
-      const x = Math.cos(ang) * radius;
-      const z = Math.sin(ang) * radius;
+      const ca = Math.cos(ang);
+      const sa = Math.sin(ang);
+      const x = ca * radius;
+      const z = sa * radius;
       const y = Math.sin(incl) * radius;
-      dummy.position.set(x, y, z);
-      dummy.rotation.set(rr(4) * 3, rr(5) * 3, rr(6) * 3);
       const sc = 0.35 + rr(7) * 1.5;
-      dummy.scale.set(sc, sc * (0.4 + rr(8) * 0.8), sc * (0.5 + rr(9) * 0.9));
-      dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
+      const sx = sc;
+      const sy = sc * (0.4 + rr(8) * 0.8);
+      const sz = sc * (0.5 + rr(9) * 0.9);
+      const o = i * 16;
+      matArr[o] = ca * sx;
+      matArr[o + 1] = 0;
+      matArr[o + 2] = sa * sx;
+      matArr[o + 3] = 0;
+      matArr[o + 4] = 0;
+      matArr[o + 5] = sy;
+      matArr[o + 6] = 0;
+      matArr[o + 7] = 0;
+      matArr[o + 8] = -sa * sz;
+      matArr[o + 9] = 0;
+      matArr[o + 10] = ca * sz;
+      matArr[o + 11] = 0;
+      matArr[o + 12] = x;
+      matArr[o + 13] = y;
+      matArr[o + 14] = z;
+      matArr[o + 15] = 1;
     }
     inst.instanceMatrix.needsUpdate = true;
     this.debrisMesh = inst;
@@ -892,7 +978,7 @@ export class CommandGlobe {
 
   /** Raycast helper for picking nodes on the globe. */
   pick(raycaster: THREE.Raycaster): { nodeId: string | null; spireId: number | null } {
-    const hits = raycaster.intersectObjects([...this.markerMeshes, ...this.spireMeshes], false);
+    const hits = raycaster.intersectObjects(this.pickTargets, false);
     if (hits.length === 0) return { nodeId: null, spireId: null };
     const o = hits[0].object;
     return {
@@ -903,26 +989,28 @@ export class CommandGlobe {
 
   /** Node screen position for HTML label anchoring (true when on visible front hemisphere). */
   projectNode(id: string, camera: THREE.Camera, out: THREE.Vector3): boolean {
-    const m = this.markerMeshes.find((x) => x.userData.nodeId === id);
+    const m = this.markerById.get(id) ?? this.markerMeshes.find((x) => x.userData.nodeId === id);
     if (!m) return false;
+    this.markerById.set(id, m);
     out.copy(m.position);
     this.planetMesh.localToWorld(out);
-    const camDir = camera.position.clone().normalize();
-    const surfDir = out.clone().normalize();
-    if (surfDir.dot(camDir) < 0.08) return false;
+    this._camDir.copy(camera.position).normalize();
+    this._surfDir.copy(out).normalize();
+    if (this._surfDir.dot(this._camDir) < 0.08) return false;
     out.project(camera);
     return out.z > -1 && out.z < 1;
   }
 
   /** Spire screen position for HTML label anchoring (true when on visible front hemisphere). */
   projectSpire(id: number, camera: THREE.Camera, out: THREE.Vector3): boolean {
-    const m = this.spireMeshes.find((x) => x.userData.spireId === id);
+    const m = this.spireById.get(id) ?? this.spireMeshes.find((x) => x.userData.spireId === id);
     if (!m) return false;
+    this.spireById.set(id, m);
     out.copy(m.position);
     this.planetMesh.localToWorld(out);
-    const camDir = camera.position.clone().normalize();
-    const surfDir = out.clone().normalize();
-    if (surfDir.dot(camDir) < 0.08) return false;
+    this._camDir.copy(camera.position).normalize();
+    this._surfDir.copy(out).normalize();
+    if (this._surfDir.dot(this._camDir) < 0.08) return false;
     out.project(camera);
     return out.z > -1 && out.z < 1;
   }
@@ -937,6 +1025,7 @@ export class CommandGlobe {
    * prove every overlay paints a real field rather than a flat fill.
    */
   get overlayPixels(): Uint8Array {
+    if (this.overlayDirty) this.paintOverlay();
     return this.overlayCanvas;
   }
 
@@ -961,6 +1050,9 @@ export class CommandGlobe {
       m.geometry.dispose();
       (m.material as THREE.Material).dispose();
     }
+    this.coarseByMode.clear();
+    this.markerById.clear();
+    this.spireById.clear();
     this.group.clear();
   }
 }

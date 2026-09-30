@@ -954,6 +954,7 @@ export class UIController {
 
   setHud(model: HudModel | null): void {
     if (!model) {
+      if (!this.el.hud.classList.contains('active')) return;
       this.el.hud.classList.remove('active');
       this.gaugeEls.clear();
       this.el.gauges.innerHTML = '';
@@ -1018,14 +1019,22 @@ export class UIController {
     this.el.readout.textContent = model.readout + (model.target ? `  ·  mass ${model.target}` : '');
 
     // Objectives.
-    this.el.objBody.innerHTML = '';
     let done = 0;
+    let osig = '';
     for (const o of model.objectives) {
-      const d = document.createElement('div');
-      d.className = `obj${o.done ? ' done' : ''}`;
-      d.innerHTML = `<span class="bar"><i style="width:${(o.progress * 100).toFixed(0)}%"></i></span><span>${o.text}</span>`;
-      this.el.objBody.appendChild(d);
+      const pct = (o.progress * 100).toFixed(0);
+      osig += `${o.text}:${pct}:${o.done ? 1 : 0}|`;
       if (o.done) done++;
+    }
+    if (this.el.objBody.dataset.sig !== osig) {
+      this.el.objBody.dataset.sig = osig;
+      this.el.objBody.innerHTML = '';
+      for (const o of model.objectives) {
+        const d = document.createElement('div');
+        d.className = `obj${o.done ? ' done' : ''}`;
+        d.innerHTML = `<span class="bar"><i style="width:${(o.progress * 100).toFixed(0)}%"></i></span><span>${o.text}</span>`;
+        this.el.objBody.appendChild(d);
+      }
     }
     this.el.objCount.textContent = model.objectives.length ? `${done}/${model.objectives.length}` : '';
   }
@@ -1142,7 +1151,11 @@ export class UIController {
 
   // -- perf -----------------------------------------------------------------
 
+  private lastPerfHtml = '';
+  private settlementValEls: HTMLElement[] = [];
+
   setPerf(m: ReturnType<import('../core/perf').PerformanceMonitor['metrics']>): void {
+    if (!this.settings.showPerf) return;
     const rows: [string, string][] = [
       ['FPS', m.fps.toFixed(0)],
       ['frame', `${m.frameMs.toFixed(2)} ms`],
@@ -1158,7 +1171,10 @@ export class UIController {
     ];
     let html = '';
     for (const [k, v] of rows) html += `<div class="row"><span>${k}</span><b>${v}</b></div>`;
-    this.el.perf.innerHTML = html;
+    if (html !== this.lastPerfHtml) {
+      this.lastPerfHtml = html;
+      this.el.perf.innerHTML = html;
+    }
   }
 
   // -- toasts ---------------------------------------------------------------
@@ -1296,23 +1312,33 @@ export class UIController {
     if (this.el.settlementGrid) {
       if (this.el.settlementGrid.children.length !== settlements.length) {
         this.el.settlementGrid.innerHTML = '';
+        this.settlementValEls = [];
         for (const s of settlements) {
           const r = document.createElement('div');
           r.className = 'settlement-row';
           r.dataset.id = s.id;
-          r.innerHTML = `<span>${s.name.split(' ')[0]}</span><b>--</b>`;
+          const nameEl = document.createElement('span');
+          nameEl.textContent = s.name.split(' ')[0];
+          const valEl = document.createElement('b');
+          valEl.textContent = '--';
+          r.append(nameEl, valEl);
           this.el.settlementGrid.appendChild(r);
+          this.settlementValEls.push(valEl);
         }
       }
       let sum = 0;
       for (let i = 0; i < settlements.length; i++) {
         const s = settlements[i];
         sum += s.viability;
-        const b = this.el.settlementGrid.children[i]?.querySelector('b');
-        if (b) b.textContent = `${Math.round(s.viability * 100)}%`;
+        const b = this.settlementValEls[i];
+        if (b) {
+          const txt = `${Math.round(s.viability * 100)}%`;
+          if (b.textContent !== txt) b.textContent = txt;
+        }
       }
       if (this.el.ledgerAvg && settlements.length > 0) {
-        this.el.ledgerAvg.textContent = `avg ${Math.round((sum / settlements.length) * 100)}%`;
+        const avgTxt = `avg ${Math.round((sum / settlements.length) * 100)}%`;
+        if (this.el.ledgerAvg.textContent !== avgTxt) this.el.ledgerAvg.textContent = avgTxt;
       }
     }
     if (this.el.moduleTags) {
