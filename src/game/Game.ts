@@ -1171,11 +1171,55 @@ export class Game {
     }
   }
 
+  /**
+   * Abandon this world and generate another.
+   *
+   * This used to replace only the planetary simulation and the crisis list,
+   * which produced a chimera: a pristine crisis list on a planet whose spires
+   * had already been repaired, with the previous campaign's domain points and
+   * unlocked modules still attached. The "new" world therefore started with the
+   * Harmonic network already at two thirds coverage — the payoff of the last
+   * campaign handed over for free.
+   *
+   * Everything derived from the world seed is now regenerated together, and
+   * everything carried over from the old campaign is discarded.
+   */
   newWorld(): void {
-    this.planetary = new PlanetaryState(WORLD_SEED ^ 0x9e3779b9);
+    const seed = (WORLD_SEED ^ 0x9e3779b9 ^ ((Math.random() * 0xffffffff) >>> 0)) >>> 0;
+
+    // Leave whatever sector we are standing in before tearing the world down.
+    this.teardownSector();
+    this.ascend();
+
+    this.planetary = new PlanetaryState(seed);
     this.crises = new CrisisController(CRISIS_NODES);
-    this.save = newSave(this.planetary === this.save.planetary ? WORLD_SEED : WORLD_SEED, this.planetary.snapshot());
+    this.settlements = SETTLEMENTS.map((s) => ({ ...s }));
+    this.spires = ACOUSTIC_SPIRES.map((s) => ({
+      id: s.id,
+      functional: s.id < 2,
+      phase: (s.id * 37) % 360,
+      repairs: s.id < 2 ? 2 : 0,
+      seated: true,
+    }));
+    this.weather = new WeatherSystem(this.planetary, seed);
+    this.logistics = new LogisticsSystem(this.planetary, this.settlements);
+    this.harmonic = new HarmonicSystem(this.planetary, this.spires);
+    this.harmonicUnlocked = false;
+
+    // Pooled machines hold sector-specific tuning and objective state.
+    for (const v of this.vehicles.values()) v.dispose();
+    this.vehicles.clear();
+    this.activeVehicle = null;
+
+    this.selectedNodeId = null;
+    this.save = newSave(seed, this.planetary.snapshot());
+    this.crises.refreshAvailability(this.functionalSpireCount());
+    this.ui.setCrises(this.crises.all(), null);
+    this.ui.setSelectedNode(null);
+    this.ui.setMode('MACRO');
+    this.globe.setPlanetaryState(this.planetary.snapshot(), performance.now(), true);
     this.bus.emit(Events.Toast, { message: 'New survey parameters generated.', kind: 'good' });
+    void this.saveGame(false);
   }
 
   // -- events ---------------------------------------------------------------
