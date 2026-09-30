@@ -592,6 +592,16 @@ describe('Quality uplift regressions', () => {
     const cutterTooth = cutterHead.children[0];
     expect(Math.abs(cutterTooth.position.z)).toBeLessThan(2.0);
 
+    // GitHub Pages workflow, .nojekyll, and relative base path configuration.
+    expect(fs.existsSync('public/.nojekyll')).toBe(true);
+    const workflow = fs.readFileSync('.github/workflows/pages.yml', 'utf8');
+    expect(workflow).toContain('actions/configure-pages@v5');
+    expect(workflow).toContain('actions/upload-pages-artifact@v3');
+    expect(workflow).toContain('actions/deploy-pages@v4');
+    const viteCfg = fs.readFileSync('vite.config.ts', 'utf8');
+    expect(viteCfg).toContain("base: './'");
+    expect(viteCfg).toContain('404.html');
+
     glider.dispose();
     skiff.dispose();
     crawler.dispose();

@@ -1,3 +1,5 @@
+import { copyFileSync, existsSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -7,6 +9,19 @@ export default defineConfig({
   // production preview. This is a local, offline, telemetry-free app.
   server: { host: '0.0.0.0', port: 5173, strictPort: false, allowedHosts: true },
   preview: { host: '0.0.0.0', port: 4173, allowedHosts: true },
+  plugins: [
+    {
+      name: 'github-pages-spa-fallback',
+      closeBundle() {
+        const outDir = resolve(process.cwd(), 'dist');
+        const indexHtml = resolve(outDir, 'index.html');
+        if (existsSync(indexHtml)) {
+          copyFileSync(indexHtml, resolve(outDir, '404.html'));
+          writeFileSync(resolve(outDir, '.nojekyll'), '');
+        }
+      },
+    },
+  ],
   build: {
     target: 'es2022',
     sourcemap: false,

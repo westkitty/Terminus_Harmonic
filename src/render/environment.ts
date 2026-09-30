@@ -409,6 +409,15 @@ export class SectorEnvironment {
     };
 
     const landmarkCount = 6;
+    const ribGeo = profile.landmarkKind === 'FOSSIL_ARCH' ? new THREE.BoxGeometry(2.2, 16, 3.4) : null;
+    const legGeo = profile.landmarkKind === 'FOUNDRY_GANTRY' ? new THREE.BoxGeometry(1.8, 22, 1.8) : null;
+    const beamGeo = profile.landmarkKind === 'FOUNDRY_GANTRY' ? new THREE.BoxGeometry(18, 2.2, 2.4) : null;
+    const coneGeo = profile.landmarkKind === 'VENT_CHIMNEY' ? new THREE.CylinderGeometry(2.4, 5.8, 15, 7) : null;
+    const throatGeo = profile.landmarkKind === 'VENT_CHIMNEY' ? new THREE.TorusGeometry(2.3, 0.45, 6, 14) : null;
+    const colAGeo = profile.landmarkKind === 'MONOLITH_CLUSTER' ? new THREE.CylinderGeometry(1.6, 2.1, 18, 6) : null;
+    const colBGeo = profile.landmarkKind === 'MONOLITH_CLUSTER' ? new THREE.CylinderGeometry(1.2, 1.6, 12, 6) : null;
+    const colCGeo = profile.landmarkKind === 'MONOLITH_CLUSTER' ? new THREE.CylinderGeometry(1.1, 1.4, 9, 6) : null;
+
     for (let i = 0; i < landmarkCount; i++) {
       const angle = (i / landmarkCount) * Math.PI * 2 + (rnd() - 0.5) * 0.45;
       const dist = 140 + rnd() * 240;
@@ -421,8 +430,7 @@ export class SectorEnvironment {
       node.position.set(lx, ground, lz);
       node.rotation.y = angle + (rnd() - 0.5) * 0.8;
 
-      if (profile.landmarkKind === 'FOSSIL_ARCH') {
-        const ribGeo = new THREE.BoxGeometry(2.2, 16, 3.4);
+      if (profile.landmarkKind === 'FOSSIL_ARCH' && ribGeo) {
         for (let r = -2; r <= 2; r++) {
           const rib = new THREE.Mesh(ribGeo, r === 0 ? accentMat : mat);
           rib.position.set(r * 4.5, 6.5 - Math.abs(r) * 1.1, 0);
@@ -430,31 +438,30 @@ export class SectorEnvironment {
           rib.rotation.x = 0.28;
           node.add(rib);
         }
-      } else if (profile.landmarkKind === 'FOUNDRY_GANTRY') {
-        const legGeo = new THREE.BoxGeometry(1.8, 22, 1.8);
+      } else if (profile.landmarkKind === 'FOUNDRY_GANTRY' && legGeo && beamGeo) {
         const legL = new THREE.Mesh(legGeo, mat);
         legL.position.set(-7, 10, 0);
         legL.rotation.z = -0.08;
         const legR = new THREE.Mesh(legGeo, mat);
         legR.position.set(7, 10, 0);
         legR.rotation.z = 0.08;
-        const beam = new THREE.Mesh(new THREE.BoxGeometry(18, 2.2, 2.4), accentMat);
+        const beam = new THREE.Mesh(beamGeo, accentMat);
         beam.position.set(0, 20.2, 0);
         node.add(legL, legR, beam);
-      } else if (profile.landmarkKind === 'VENT_CHIMNEY') {
-        const cone = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 5.8, 15, 7), mat);
+      } else if (profile.landmarkKind === 'VENT_CHIMNEY' && coneGeo && throatGeo) {
+        const cone = new THREE.Mesh(coneGeo, mat);
         cone.position.y = 7.2;
-        const throat = new THREE.Mesh(new THREE.TorusGeometry(2.3, 0.45, 6, 14), accentMat);
+        const throat = new THREE.Mesh(throatGeo, accentMat);
         throat.rotation.x = Math.PI / 2;
         throat.position.y = 14.8;
         node.add(cone, throat);
-      } else {
-        const colA = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 2.1, 18, 6), mat);
+      } else if (colAGeo && colBGeo && colCGeo) {
+        const colA = new THREE.Mesh(colAGeo, mat);
         colA.position.set(0, 8.5, 0);
-        const colB = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.6, 12, 6), accentMat);
+        const colB = new THREE.Mesh(colBGeo, accentMat);
         colB.position.set(3.4, 5.5, 1.8);
         colB.rotation.z = -0.14;
-        const colC = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.4, 9, 6), mat);
+        const colC = new THREE.Mesh(colCGeo, mat);
         colC.position.set(-3.1, 4.2, -1.5);
         colC.rotation.z = 0.18;
         node.add(colA, colB, colC);
