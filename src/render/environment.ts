@@ -1,21 +1,117 @@
 /**
- * SECTOR ENVIRONMENT — lighting, hazard fluids, instanced props, spires
- * =====================================================================
+ * SECTOR ENVIRONMENT — lighting, hazard fluids, instanced props, landmarks, spires
+ * ================================================================================
  *
  * Everything here is bounded and pooled:
- *   - one directional stellar light with an adaptive shadow frustum
+ *   - one directional stellar light with an adaptive shadow frustum aligned to
+ *     the orbital/sky sun vector
  *   - a hemisphere fill for the polluted ambient
  *   - hazard fluids (toxic mud, magma, industrial runoff) drawn with an
  *     animated shader rather than a fluid simulation
- *   - instanced scatter (rock, glass shards, wreckage, ruins) — one draw call
- *     per scatter class, count driven by quality tier
- *   - acoustic spires as colossal industrial geometry
+ *   - biome-specific instanced scatter (boulders, structural blocks, shards,
+ *     columns) — one draw call per scatter class, count driven by quality tier
+ *   - monumental biome-specific geological/industrial landmarks (calcified
+ *     Drakken strata arches, collapsed foundry gantries, fumarole chimneys,
+ *     sheared monoliths)
+ *   - acoustic spires as colossal horizon geometry along true planetary bearing
  */
 
 import * as THREE from 'three';
 import { clamp01, mixSeed } from '../core/math';
 import { ACOUSTIC_SPIRES, type BiomeId } from '../state/world';
 import type { SectorField } from '../sector/field';
+
+interface BiomeScatterProfile {
+  colors: [number, number, number, number];
+  roughness: [number, number, number, number];
+  metalness: [number, number, number, number];
+  landmarkKind: 'FOSSIL_ARCH' | 'FOUNDRY_GANTRY' | 'VENT_CHIMNEY' | 'MONOLITH_CLUSTER';
+  landmarkColor: number;
+  accentColor: number;
+}
+
+const BIOME_SCATTER_PALETTE: Record<BiomeId, BiomeScatterProfile> = {
+  VITRIFIED_BASIN: {
+    colors: [0x242930, 0x323b44, 0x4f7282, 0x3c4c59],
+    roughness: [0.28, 0.42, 0.22, 0.48],
+    metalness: [0.35, 0.45, 0.62, 0.52],
+    landmarkKind: 'FOSSIL_ARCH',
+    landmarkColor: 0x34404d,
+    accentColor: 0x5ea2b8,
+  },
+  SHATTERED_BASALT: {
+    colors: [0x2e2b29, 0x3b3632, 0x57483d, 0x6a3c24],
+    roughness: [0.88, 0.82, 0.74, 0.68],
+    metalness: [0.12, 0.2, 0.22, 0.3],
+    landmarkKind: 'MONOLITH_CLUSTER',
+    landmarkColor: 0x3a3532,
+    accentColor: 0x805538,
+  },
+  SALT_FLAT: {
+    colors: [0x948d7e, 0x827b6d, 0xb5ae9e, 0x736b5e],
+    roughness: [0.76, 0.82, 0.64, 0.78],
+    metalness: [0.06, 0.08, 0.14, 0.1],
+    landmarkKind: 'MONOLITH_CLUSTER',
+    landmarkColor: 0x9e9585,
+    accentColor: 0xc8c2b4,
+  },
+  TOXIC_VEIL: {
+    colors: [0x3c4028, 0x313622, 0x687832, 0x4f5430],
+    roughness: [0.84, 0.88, 0.58, 0.76],
+    metalness: [0.1, 0.16, 0.28, 0.22],
+    landmarkKind: 'VENT_CHIMNEY',
+    landmarkColor: 0x4a502f,
+    accentColor: 0x8ea446,
+  },
+  REMNANT_SOIL: {
+    colors: [0x4c3d2f, 0x3d3227, 0x66523e, 0x735338],
+    roughness: [0.9, 0.86, 0.78, 0.72],
+    metalness: [0.08, 0.14, 0.18, 0.24],
+    landmarkKind: 'MONOLITH_CLUSTER',
+    landmarkColor: 0x594635,
+    accentColor: 0x8a6d4b,
+  },
+  PETRIFIED_MEGAFLORA: {
+    colors: [0x463a31, 0x382f28, 0x6b5341, 0x7d5e44],
+    roughness: [0.85, 0.88, 0.72, 0.66],
+    metalness: [0.1, 0.14, 0.22, 0.26],
+    landmarkKind: 'FOSSIL_ARCH',
+    landmarkColor: 0x5e493a,
+    accentColor: 0x9c7a54,
+  },
+  GLASS_LATTICE: {
+    colors: [0x2c3842, 0x384854, 0x6aa8bf, 0x496170],
+    roughness: [0.22, 0.3, 0.18, 0.36],
+    metalness: [0.48, 0.55, 0.68, 0.58],
+    landmarkKind: 'MONOLITH_CLUSTER',
+    landmarkColor: 0x465d6b,
+    accentColor: 0x7bc2d8,
+  },
+  FOUNDRY_RUIN: {
+    colors: [0x3d342f, 0x2e2926, 0x6e4f3a, 0x824628],
+    roughness: [0.76, 0.64, 0.58, 0.52],
+    metalness: [0.38, 0.62, 0.55, 0.68],
+    landmarkKind: 'FOUNDRY_GANTRY',
+    landmarkColor: 0x543d2e,
+    accentColor: 0xb86b38,
+  },
+  FOSSIL_STRATA: {
+    colors: [0x52463a, 0x42382e, 0x7a6955, 0x8c765c],
+    roughness: [0.84, 0.86, 0.7, 0.68],
+    metalness: [0.12, 0.16, 0.24, 0.22],
+    landmarkKind: 'FOSSIL_ARCH',
+    landmarkColor: 0x6e5d4b,
+    accentColor: 0xa68f72,
+  },
+  CRUSTAL_VENT: {
+    colors: [0x332420, 0x291d1a, 0x6e3622, 0x943d1e],
+    roughness: [0.82, 0.86, 0.62, 0.58],
+    metalness: [0.16, 0.22, 0.34, 0.38],
+    landmarkKind: 'VENT_CHIMNEY',
+    landmarkColor: 0x4d2b20,
+    accentColor: 0xd9622b,
+  },
+};
 
 const HAZARD_VERT = /* glsl */ `
 varying vec2 vUv;
@@ -63,8 +159,6 @@ void main() {
   float n2 = fbm(p * 2.1 - vec2(t * 0.22, t * 0.4));
   float veins = smoothstep(0.42, 0.78, n * 0.65 + n2 * 0.35);
   vec3 col = mix(uColorA, uColorB, veins);
-  // Surface sheen.
-  float sheen = pow(1.0 - abs(dot(normalize(vec3(0.0, 1.0, 0.0)), vec3(0.0, 1.0, 0.0))), 1.0);
   col += uColorB * 0.12 * veins;
   float alpha = uOpacity * (0.35 + veins * 0.65);
   gl_FragColor = vec4(col, alpha);
@@ -78,10 +172,12 @@ export class SectorEnvironment {
   readonly fill: THREE.DirectionalLight;
 
   private field: SectorField;
+  private sunDir = new THREE.Vector3(600, 900, 400).normalize();
   private hazardMaterial: THREE.ShaderMaterial;
   private hazardMeshes: THREE.Mesh[] = [];
   private scatter: THREE.InstancedMesh[] = [];
   private scatterCount = 0;
+  private landmarks: THREE.Group[] = [];
   private spires: THREE.Group[] = [];
   private dustParticles: THREE.Points | null = null;
   private disposed = false;
@@ -132,6 +228,7 @@ export class SectorEnvironment {
     });
 
     this.buildScatter(quality.particleScale);
+    this.buildBiomeLandmarks();
     this.buildDust(quality.particleScale);
   }
 
@@ -175,11 +272,47 @@ export class SectorEnvironment {
   // -- instanced scatter ----------------------------------------------------
 
   private buildScatter(particleScale: number): void {
-    const classes: { geo: THREE.BufferGeometry; count: number; color: number; scale: [number, number] }[] = [
-      { geo: new THREE.IcosahedronGeometry(1, 0), count: 420, color: 0x4a453e, scale: [1.5, 7] },
-      { geo: new THREE.BoxGeometry(1, 1, 1), count: 260, color: 0x3a3630, scale: [2, 9] },
-      { geo: new THREE.ConeGeometry(1, 2.4, 5), count: 180, color: 0x5a5048, scale: [2, 8] },
-      { geo: new THREE.CylinderGeometry(0.35, 0.5, 6, 6), count: 150, color: 0x6a3a22, scale: [3, 12] },
+    const profile = BIOME_SCATTER_PALETTE[this.field.params.biome] ?? BIOME_SCATTER_PALETTE.VITRIFIED_BASIN;
+    const classes: {
+      geo: THREE.BufferGeometry;
+      count: number;
+      color: number;
+      roughness: number;
+      metalness: number;
+      scale: [number, number];
+    }[] = [
+      {
+        geo: new THREE.IcosahedronGeometry(1, 0),
+        count: 420,
+        color: profile.colors[0],
+        roughness: profile.roughness[0],
+        metalness: profile.metalness[0],
+        scale: [1.5, 7],
+      },
+      {
+        geo: new THREE.BoxGeometry(1, 1, 1),
+        count: 260,
+        color: profile.colors[1],
+        roughness: profile.roughness[1],
+        metalness: profile.metalness[1],
+        scale: [2, 9],
+      },
+      {
+        geo: new THREE.ConeGeometry(1, 2.4, 5),
+        count: 180,
+        color: profile.colors[2],
+        roughness: profile.roughness[2],
+        metalness: profile.metalness[2],
+        scale: [2, 8],
+      },
+      {
+        geo: new THREE.CylinderGeometry(0.35, 0.5, 6, 6),
+        count: 150,
+        color: profile.colors[3],
+        roughness: profile.roughness[3],
+        metalness: profile.metalness[3],
+        scale: [3, 12],
+      },
     ];
     const seed = mixSeed(this.field.params.seed, this.field.params.lat * 1000 + this.field.params.lon);
     let s = seed >>> 0;
@@ -190,7 +323,12 @@ export class SectorEnvironment {
     let total = 0;
     for (const cls of classes) {
       const count = Math.max(8, Math.round(cls.count * clamp01(particleScale)));
-      const mat = new THREE.MeshStandardMaterial({ color: cls.color, roughness: 0.92, metalness: 0.08 });
+      const mat = new THREE.MeshStandardMaterial({
+        color: cls.color,
+        roughness: cls.roughness,
+        metalness: cls.metalness,
+        flatShading: true,
+      });
       const inst = new THREE.InstancedMesh(cls.geo, mat, count);
       inst.castShadow = true;
       inst.receiveShadow = true;
@@ -241,6 +379,90 @@ export class SectorEnvironment {
       total += count;
     }
     this.scatterCount = total;
+  }
+
+  /**
+   * Build monumental biome-specific geological or industrial remnant landmarks
+   * around the sector perimeter (Drakken remnants appear strictly as
+   * non-humanoid calcified/vitrified geological dorsal arches).
+   */
+  private buildBiomeLandmarks(): void {
+    const profile = BIOME_SCATTER_PALETTE[this.field.params.biome] ?? BIOME_SCATTER_PALETTE.VITRIFIED_BASIN;
+    const mat = new THREE.MeshStandardMaterial({
+      color: profile.landmarkColor,
+      roughness: profile.roughness[1],
+      metalness: profile.metalness[1],
+      flatShading: true,
+    });
+    const accentMat = new THREE.MeshStandardMaterial({
+      color: profile.accentColor,
+      roughness: profile.roughness[2],
+      metalness: profile.metalness[2],
+      flatShading: true,
+    });
+
+    const seed = mixSeed(this.field.params.seed ^ 0x5f3759df, this.field.params.lat * 701 + this.field.params.lon);
+    let s = seed >>> 0;
+    const rnd = (): number => {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+
+    const landmarkCount = 6;
+    for (let i = 0; i < landmarkCount; i++) {
+      const angle = (i / landmarkCount) * Math.PI * 2 + (rnd() - 0.5) * 0.45;
+      const dist = 140 + rnd() * 240;
+      const lx = Math.cos(angle) * dist;
+      const lz = Math.sin(angle) * dist;
+      const ground = this.field.elevation(lx, lz);
+
+      const node = new THREE.Group();
+      node.name = `landmark-${profile.landmarkKind.toLowerCase()}-${i}`;
+      node.position.set(lx, ground, lz);
+      node.rotation.y = angle + (rnd() - 0.5) * 0.8;
+
+      if (profile.landmarkKind === 'FOSSIL_ARCH') {
+        const ribGeo = new THREE.BoxGeometry(2.2, 16, 3.4);
+        for (let r = -2; r <= 2; r++) {
+          const rib = new THREE.Mesh(ribGeo, r === 0 ? accentMat : mat);
+          rib.position.set(r * 4.5, 6.5 - Math.abs(r) * 1.1, 0);
+          rib.rotation.z = r * 0.22;
+          rib.rotation.x = 0.28;
+          node.add(rib);
+        }
+      } else if (profile.landmarkKind === 'FOUNDRY_GANTRY') {
+        const legGeo = new THREE.BoxGeometry(1.8, 22, 1.8);
+        const legL = new THREE.Mesh(legGeo, mat);
+        legL.position.set(-7, 10, 0);
+        legL.rotation.z = -0.08;
+        const legR = new THREE.Mesh(legGeo, mat);
+        legR.position.set(7, 10, 0);
+        legR.rotation.z = 0.08;
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(18, 2.2, 2.4), accentMat);
+        beam.position.set(0, 20.2, 0);
+        node.add(legL, legR, beam);
+      } else if (profile.landmarkKind === 'VENT_CHIMNEY') {
+        const cone = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 5.8, 15, 7), mat);
+        cone.position.y = 7.2;
+        const throat = new THREE.Mesh(new THREE.TorusGeometry(2.3, 0.45, 6, 14), accentMat);
+        throat.rotation.x = Math.PI / 2;
+        throat.position.y = 14.8;
+        node.add(cone, throat);
+      } else {
+        const colA = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 2.1, 18, 6), mat);
+        colA.position.set(0, 8.5, 0);
+        const colB = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.6, 12, 6), accentMat);
+        colB.position.set(3.4, 5.5, 1.8);
+        colB.rotation.z = -0.14;
+        const colC = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.4, 9, 6), mat);
+        colC.position.set(-3.1, 4.2, -1.5);
+        colC.rotation.z = 0.18;
+        node.add(colA, colB, colC);
+      }
+
+      this.landmarks.push(node);
+      this.group.add(node);
+    }
   }
 
   private buildDust(particleScale: number): void {
@@ -310,7 +532,8 @@ export class SectorEnvironment {
     const steel = new THREE.MeshStandardMaterial({ color: 0x3c4045, roughness: 0.7, metalness: 0.55 });
     const azure = new THREE.MeshBasicMaterial({ color: 0x2f9fd0, toneMapped: false });
 
-    for (const id of spireIds) {
+    for (let idx = 0; idx < spireIds.length; idx++) {
+      const id = spireIds[idx];
       const def = ACOUSTIC_SPIRES[id];
       if (!def) continue;
       const g = new THREE.Group();
@@ -319,6 +542,15 @@ export class SectorEnvironment {
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(height * 0.012, height * 0.055, height, 12, 4), concrete);
       shaft.position.y = height * 0.5;
       g.add(shaft);
+      // Three vertical waveguide ribs.
+      const finGeo = new THREE.BoxGeometry(height * 0.012, height * 0.68, height * 0.075);
+      for (let f = 0; f < 3; f++) {
+        const ang = (f * Math.PI * 2) / 3;
+        const fin = new THREE.Mesh(finGeo, steel);
+        fin.position.set(Math.cos(ang) * height * 0.048, height * 0.38, Math.sin(ang) * height * 0.048);
+        fin.rotation.y = -ang + Math.PI / 2;
+        g.add(fin);
+      }
       // External bracing rings.
       for (let i = 1; i <= 6; i++) {
         const t = i / 7;
@@ -349,8 +581,14 @@ export class SectorEnvironment {
         shaft.position.y = height * 0.275;
         emitters.visible = false;
       }
-      const x = (def.lon - this.field.params.lon) * 900 * Math.cos((def.lat * Math.PI) / 180);
-      const z = -(def.lat - this.field.params.lat) * 900;
+      const rawX = (def.lon - this.field.params.lon) * 900 * Math.cos((def.lat * Math.PI) / 180);
+      const rawZ = -(def.lat - this.field.params.lat) * 900;
+      const rawDist = Math.hypot(rawX, rawZ);
+      // Clamp distant spires onto a visible sector horizon ring (460..860 m) along their true planetary bearing.
+      const bearing = rawDist > 1e-3 ? Math.atan2(rawZ, rawX) : (idx * Math.PI * 2) / Math.max(1, spireIds.length);
+      const dist = rawDist >= 180 && rawDist <= 920 ? rawDist : 460 + (id % 4) * 115;
+      const x = Math.cos(bearing) * dist;
+      const z = Math.sin(bearing) * dist;
       g.position.set(x, this.field.elevation(x, z) - 2, z);
       g.userData.spireId = id;
       g.userData.functional = isFunctional;
@@ -373,6 +611,24 @@ export class SectorEnvironment {
     this.spires.length = 0;
   }
 
+  private clearLandmarks(): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    for (const g of this.landmarks) {
+      g.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) geometries.add(m.geometry);
+        const mat = m.material;
+        if (Array.isArray(mat)) mat.forEach((x) => materials.add(x));
+        else if (mat) materials.add(mat as THREE.Material);
+      });
+      this.group.remove(g);
+    }
+    for (const geo of geometries) geo.dispose();
+    for (const mat of materials) mat.dispose();
+    this.landmarks.length = 0;
+  }
+
   // -- per-frame ------------------------------------------------------------
 
   update(dt: number, elapsed: number, camera: THREE.Camera): void {
@@ -382,8 +638,12 @@ export class SectorEnvironment {
       (this.dustParticles.material as THREE.ShaderMaterial).uniforms.uTime.value = elapsed;
       this.dustParticles.position.set(camera.position.x, 0, camera.position.z);
     }
-    // Keep the shadow frustum tight around the camera.
-    this.sun.position.set(camera.position.x + 400, camera.position.y + 620, camera.position.z + 300);
+    // Keep the shadow frustum tight around the camera while preserving the sun direction from setSunDirection().
+    this.sun.position.set(
+      camera.position.x + this.sunDir.x * 840,
+      camera.position.y + Math.max(0.22, this.sunDir.y) * 840,
+      camera.position.z + this.sunDir.z * 840,
+    );
     this.sun.target.position.set(camera.position.x, camera.position.y - 40, camera.position.z);
     this.sun.target.updateMatrixWorld();
     void dt;
@@ -399,7 +659,10 @@ export class SectorEnvironment {
   }
 
   setSunDirection(dir: THREE.Vector3): void {
-    this.sun.position.copy(dir).multiplyScalar(1200);
+    if (dir.lengthSq() > 1e-6) {
+      this.sunDir.copy(dir).normalize();
+    }
+    this.sun.position.copy(this.sunDir).multiplyScalar(1200);
   }
 
   setToxicity(t: number): void {
@@ -408,7 +671,13 @@ export class SectorEnvironment {
   }
 
   get drawCalls(): number {
-    return this.scatter.length + this.hazardMeshes.length + this.spires.length + (this.dustParticles ? 1 : 0);
+    return (
+      this.scatter.length +
+      this.landmarks.length +
+      this.hazardMeshes.length +
+      this.spires.length +
+      (this.dustParticles ? 1 : 0)
+    );
   }
 
   get instancedCount(): number {
@@ -427,6 +696,7 @@ export class SectorEnvironment {
     }
     this.dustParticles?.geometry.dispose();
     (this.dustParticles?.material as THREE.Material)?.dispose();
+    this.clearLandmarks();
     this.clearSpires();
     this.group.clear();
   }

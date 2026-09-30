@@ -1,8 +1,12 @@
 /**
- * Generates the PWA icons deterministically (no binary assets in the repo).
+ * Generates the PWA icons deterministically (no external binary dependencies).
  *
- * The mark: a dark field, a scarred ochre planetary disc with a wound arc, and a
- * thin azure phase ring — the Terminus Harmonic signature.
+ * Visual contract:
+ *   - Obsidian void field (#07080a) with subtle radial depth vignette
+ *   - Scarred, oxidised ochre/rust planetary disc with tectonic fault lines and
+ *     warm amber terminator rim light
+ *   - Crisp azure phase-lock ring (#3fa9d8) with four cardinal harmonic nodes
+ *     and outer dashed orbital telemetry track, matching `public/icons/mark.svg`
  *
  * Run: node scripts/make-icons.mjs
  */
@@ -55,7 +59,6 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-// Deterministic value noise.
 function hash2(x, y, s) {
   let h = (s ^ 0x9e3779b9) >>> 0;
   h = Math.imul(h ^ (x | 0), 0x27d4eb2d) >>> 0;
@@ -83,65 +86,135 @@ function fbm(x, y, s, oct = 4) {
   return v / n;
 }
 
+function smoothstep(e0, e1, x) {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
 function makeIcon(size, maskable) {
   const px = Buffer.alloc(size * size * 4);
   const cx = size / 2;
   const cy = size / 2;
-  // Maskable icons need a safe zone: shrink the artwork to ~72% of the canvas.
-  const r = maskable ? size * 0.33 : size * 0.34;
-  const safe = maskable ? size * 0.72 : size * 0.86;
+  // Normalised radii in 0..1 half-canvas coordinates.
+  const scale = maskable ? 0.80 : 0.94;
+  const planetR = 0.54 * scale;
+  const ringR = 0.72 * scale;
+  const outerR = 0.82 * scale;
+  const aa = 2.2 / size;
 
   for (let y = 0; y < size; y++) {
+    const vy = y / size;
     for (let x = 0; x < size; x++) {
       const i = (y * size + x) * 4;
       const dx = (x - cx) / (size * 0.5);
       const dy = (y - cy) / (size * 0.5);
       const d = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx);
 
-      // Background: near-black with a faint vertical gradient.
-      let r0 = 5 + (y / size) * 4;
-      let g0 = 6 + (y / size) * 4;
-      let b0 = 10 + (y / size) * 6;
+      // 1. Obsidian void background in 0..1 colour space (#07080a -> #0c0f14).
+      const bgGlow = Math.max(0, 1 - d * 0.85);
+      let r0 = 0.027 + vy * 0.012 + bgGlow * 0.018;
+      let g0 = 0.031 + vy * 0.014 + bgGlow * 0.024;
+      let b0 = 0.041 + vy * 0.018 + bgGlow * 0.032;
 
-      if (d < r / (size * 0.5)) {
-        // Planet disc, scarred.
-        const n = fbm(dx * 6, dy * 6, 0x51ed, 5);
-        const wound = fbm(dx * 3.2 + 4, dy * 3.2, 0xa17, 3);
-        const vit = Math.max(0, Math.min(1, (wound - 0.55) * 3));
-        const scar = Math.max(0, Math.min(1, (n - 0.62) * 3.4));
-        let pr = 0.115 + n * 0.13 + vit * 0.03 - scar * 0.03;
-        let pg = 0.105 + n * 0.10 + vit * 0.01 - scar * 0.01;
-        let pb = 0.098 + n * 0.08 + vit * 0.06 - scar * 0.02;
-        // Terminator shading from the upper-left.
-        const lit = Math.max(0, Math.min(1, (-dx * 0.6 - dy * 0.6 + 0.55) * 1.5));
-        pr *= 0.25 + lit * 1.0;
-        pg *= 0.25 + lit * 0.95;
-        pb *= 0.25 + lit * 0.9;
-        // Oxidation banding.
-        const ox = fbm(dx * 12, dy * 12, 0x77aa, 3);
-        pr += ox * 0.09;
-        pg += ox * 0.035;
-        pb += ox * 0.012;
-        r0 = pr; g0 = pg; b0 = pb;
+      // 2. Subtle atmospheric limb halo around the planet disc.
+      if (d >= planetR * 0.92 && d < planetR * 1.24) {
+        const halo = Math.exp(-Math.pow((d - planetR) / (0.07 * scale), 2));
+        const sunSide = Math.max(0.15, (-dx * 0.65 - dy * 0.65 + 0.45));
+        r0 += 0.22 * halo * sunSide;
+        g0 += 0.16 * halo * sunSide;
+        b0 += 0.11 * halo * sunSide;
       }
 
-      // Azure phase ring — the Terminus Harmonic signature, outside the disc.
-      const ringR = (r / (size * 0.5)) * 1.16;
+      // 3. Scarred planetary sphere with 3D spherical normals & tectonic fissures.
+      if (d < planetR + aa) {
+        const edgeAlpha = 1 - smoothstep(planetR - aa, planetR + aa, d);
+        const nx = dx / planetR;
+        const ny = dy / planetR;
+        const nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+
+        // Spherical continent / basin / oxidation noise.
+        const cont = fbm(nx * 3.4 + 1.7, ny * 3.4 + nz * 1.2, 0x51ed, 5);
+        const ox = fbm(nx * 7.5 - 2.1, ny * 7.5 + nz * 2.0, 0x77aa, 4);
+        const ridge = Math.abs(fbm(nx * 5.2, ny * 5.2, 0xa17, 3) - 0.5);
+        const fissure = smoothstep(0.045, 0.0, ridge);
+
+        // Base scorched rock + vitrified basin + rust oxidation.
+        let pr = 0.14 + cont * 0.22 + ox * 0.16;
+        let pg = 0.10 + cont * 0.14 + ox * 0.07;
+        let pb = 0.08 + cont * 0.09 + ox * 0.03;
+
+        if (cont < 0.46) {
+          // Vitrified dark basin.
+          pr = 0.08 + ox * 0.06;
+          pg = 0.085 + ox * 0.05;
+          pb = 0.105 + ox * 0.07;
+        }
+
+        // Glowing tectonic wound fissure (#c98a3c / #e0b060).
+        pr = pr * (1 - fissure * 0.7) + 0.86 * fissure * 0.75;
+        pg = pg * (1 - fissure * 0.7) + 0.54 * fissure * 0.75;
+        pb = pb * (1 - fissure * 0.7) + 0.22 * fissure * 0.75;
+
+        // Directional stellar lighting from upper-left + warm limb rim.
+        const ndl = Math.max(0, -nx * 0.58 - ny * 0.55 + nz * 0.60);
+        const rim = Math.pow(1 - nz, 2.6) * Math.max(0, -nx * 0.5 - ny * 0.5 + 0.35);
+        const shade = 0.22 + ndl * 1.15;
+        pr = pr * shade + rim * 0.55;
+        pg = pg * shade + rim * 0.38;
+        pb = pb * shade + rim * 0.20;
+
+        // Ochre crust outline on the planet limb.
+        const limbBand = smoothstep(planetR - aa * 2.2, planetR - aa * 0.4, d);
+        pr = pr * (1 - limbBand * 0.45) + 0.78 * limbBand * 0.45;
+        pg = pg * (1 - limbBand * 0.45) + 0.54 * limbBand * 0.45;
+        pb = pb * (1 - limbBand * 0.45) + 0.24 * limbBand * 0.45;
+
+        r0 = r0 * (1 - edgeAlpha) + pr * edgeAlpha;
+        g0 = g0 * (1 - edgeAlpha) + pg * edgeAlpha;
+        b0 = b0 * (1 - edgeAlpha) + pb * edgeAlpha;
+      }
+
+      // 4. Outer dashed orbital telemetry ring (#1d4c63).
+      const outerDist = Math.abs(d - outerR);
+      const outerW = 0.011 * scale;
+      if (outerDist < outerW + aa) {
+        const dash = Math.sin(ang * 18) > -0.15 ? 1 : 0;
+        const a = (1 - smoothstep(outerW - aa, outerW + aa, outerDist)) * 0.55 * dash;
+        r0 = r0 * (1 - a) + 0.16 * a;
+        g0 = g0 * (1 - a) + 0.38 * a;
+        b0 = b0 * (1 - a) + 0.49 * a;
+      }
+
+      // 5. Primary azure Terminus Harmonic phase-lock ring (#3fa9d8).
       const ringDist = Math.abs(d - ringR);
-      const ringW = 0.012 + (d < ringR ? 0.004 : 0);
-      if (ringDist < ringW) {
-        const t = 1 - ringDist / ringW;
-        const phase = Math.atan2(dy, dx);
-        const seg = Math.max(0, Math.sin(phase * 3.0));
-        const a = t * (0.35 + seg * 0.65) * safe;
-        r0 = r0 * (1 - a) + 0.19 * a;
-        g0 = g0 * (1 - a) + 0.62 * a;
-        b0 = b0 * (1 - a) + 0.84 * a;
+      const ringW = 0.018 * scale;
+      if (ringDist < ringW + aa) {
+        const core = 1 - smoothstep(ringW * 0.35, ringW + aa, ringDist);
+        const phaseMod = 0.72 + 0.28 * Math.cos(ang * 4);
+        const a = core * phaseMod * 0.92;
+        r0 = r0 * (1 - a) + 0.25 * a;
+        g0 = g0 * (1 - a) + 0.68 * a;
+        b0 = b0 * (1 - a) + 0.86 * a;
       }
 
-      // Vignette to keep the icon legible at small sizes.
-      const vig = Math.max(0, 1 - d * d * 0.55);
-      r0 *= vig; g0 *= vig; b0 *= vig;
+      // 6. Four cardinal acoustic spire phase-lock nodes on the azure ring.
+      const nodePositions = [
+        [0, -ringR],
+        [ringR, 0],
+        [0, ringR],
+        [-ringR, 0],
+      ];
+      for (const [nx, ny] of nodePositions) {
+        const nd = Math.hypot(dx - nx, dy - ny);
+        const nr = 0.042 * scale;
+        if (nd < nr + aa * 2) {
+          const a = 1 - smoothstep(nr - aa, nr + aa, nd);
+          r0 = r0 * (1 - a) + 0.38 * a;
+          g0 = g0 * (1 - a) + 0.80 * a;
+          b0 = b0 * (1 - a) + 0.96 * a;
+        }
+      }
 
       px[i] = Math.round(Math.max(0, Math.min(1, r0)) * 255);
       px[i + 1] = Math.round(Math.max(0, Math.min(1, g0)) * 255);

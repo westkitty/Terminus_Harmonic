@@ -197,12 +197,14 @@ export class CommandGlobe {
   private markerById = new Map<string, THREE.Mesh>();
   private markerRings: THREE.Mesh[] = [];
   private spireMeshes: THREE.Mesh[] = [];
+  private spireRings: THREE.Mesh[] = [];
   private spireById = new Map<number, THREE.Mesh>();
   private pickTargets: THREE.Mesh[] = [];
   private settlementMeshes: THREE.Mesh[] = [];
   private settlementById = new Map<string, THREE.Mesh>();
   private debrisMesh: THREE.InstancedMesh | null = null;
   private routeLines: THREE.LineSegments | null = null;
+  private harmonicLines: THREE.LineSegments | null = null;
 
   /** Currently displayed overlay. */
   overlay: OverlayMode = 'TOPOGRAPHY';
@@ -727,9 +729,10 @@ export class CommandGlobe {
   private markerData: MarkerStyle[] = [];
 
   private buildMarkers(): void {
-    const geoCone = new THREE.ConeGeometry(1.6, 4.4, 6);
-    geoCone.rotateX(Math.PI);
-    const mat = new THREE.MeshBasicMaterial({ toneMapped: false });
+    const geoCone = new THREE.ConeGeometry(1.5, 4.4, 6);
+    // Point apex radially inward (-Z) so the beacon points directly at the surface site when oriented via lookAt (+Z outward).
+    geoCone.rotateX(-Math.PI / 2);
+    geoCone.translate(0, 0, 2.2);
     for (const node of CRISIS_NODES) {
       const color = CommandGlobe.DOMAIN_COLOR[node.domain];
       const m = new THREE.Mesh(geoCone, new THREE.MeshBasicMaterial({ color, toneMapped: false }));
@@ -762,12 +765,14 @@ export class CommandGlobe {
         name: node.name,
       });
     }
-    void mat;
   }
 
   private buildSpires(): void {
-    const geo = new THREE.CylinderGeometry(0.22, 0.5, 3.4, 5);
-    geo.translate(0, 1.7, 0);
+    // Rotate cylinder from +Y to +Z so lookAt(outward normal) stands the spire radially upright from the crust.
+    const geo = new THREE.CylinderGeometry(0.22, 0.54, 3.8, 6);
+    geo.rotateX(Math.PI / 2);
+    geo.translate(0, 0, 1.9);
+    const ringGeo = new THREE.RingGeometry(0.85, 1.45, 18);
     for (const s of ACOUSTIC_SPIRES) {
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x1d4c63, toneMapped: false }));
       const dir = latLonDir(s.lat, s.lon);
@@ -776,15 +781,67 @@ export class CommandGlobe {
       m.userData.spireId = s.id;
       this.spireGroup.add(m);
       this.spireMeshes.push(m);
+
+      const ring = new THREE.Mesh(
+        ringGeo,
+        new THREE.MeshBasicMaterial({
+          color: 0x3fa9d8,
+          transparent: true,
+          opacity: 0.35,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        }),
+      );
+      ring.position.copy(dir).multiplyScalar(this.planetRadius * 1.003);
+      ring.lookAt(dir.clone().multiplyScalar(this.planetRadius * 2));
+      ring.userData.spireId = s.id;
+      this.spireGroup.add(ring);
+      this.spireRings.push(ring);
     }
+
+    // Harmonic phase-lock lattice arcs connecting the 12 acoustic spires.
+    const hPts: number[] = [];
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < ACOUSTIC_SPIRES.length; i++) {
+      const a = ACOUSTIC_SPIRES[i];
+      const b = ACOUSTIC_SPIRES[(i + 1) % ACOUSTIC_SPIRES.length];
+      const da = latLonDir(a.lat, a.lon).multiplyScalar(this.planetRadius * 1.018);
+      const db = latLonDir(b.lat, b.lon).multiplyScalar(this.planetRadius * 1.018);
+      for (let step = 0; step < 12; step++) {
+        const t0 = step / 12;
+        const t1 = (step + 1) / 12;
+        tmp.copy(da).lerp(db, t0);
+        tmp.normalize().multiplyScalar(this.planetRadius * (1.018 + Math.sin(t0 * Math.PI) * 0.036));
+        hPts.push(tmp.x, tmp.y, tmp.z);
+        tmp.copy(da).lerp(db, t1);
+        tmp.normalize().multiplyScalar(this.planetRadius * (1.018 + Math.sin(t1 * Math.PI) * 0.036));
+        hPts.push(tmp.x, tmp.y, tmp.z);
+      }
+    }
+    const hGeo = new THREE.BufferGeometry();
+    hGeo.setAttribute('position', new THREE.Float32BufferAttribute(hPts, 3));
+    this.harmonicLines = new THREE.LineSegments(
+      hGeo,
+      new THREE.LineBasicMaterial({
+        color: 0x3fa9d8,
+        transparent: true,
+        opacity: 0.14,
+        toneMapped: false,
+      }),
+    );
+    this.spireGroup.add(this.harmonicLines);
   }
 
   private buildSettlements(): void {
-    const geo = new THREE.BoxGeometry(1.1, 1.1, 1.1);
+    // Hexagonal habitat dome oriented radially onto the surface normal.
+    const geo = new THREE.CylinderGeometry(0.75, 1.1, 1.1, 6);
+    geo.rotateX(Math.PI / 2);
+    geo.translate(0, 0, 0.55);
     for (const s of SETTLEMENTS) {
       const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xd8b478, toneMapped: false }));
       const dir = latLonDir(s.lat, s.lon);
       m.position.copy(dir).multiplyScalar(this.planetRadius * 1.002);
+      m.lookAt(dir.clone().multiplyScalar(this.planetRadius * 2));
       m.userData.settlementId = s.id;
       this.settlementGroup.add(m);
       this.settlementMeshes.push(m);
@@ -946,21 +1003,37 @@ export class CommandGlobe {
         ring.rotation.z += dt * 0.6;
       }
     }
-    for (const m of this.spireMeshes) {
+    let liveSpires = 0;
+    for (let i = 0; i < this.spireMeshes.length; i++) {
+      const m = this.spireMeshes[i];
+      const ring = this.spireRings[i];
       const id = m.userData.spireId as number;
       const functional = spireFunctional[id] ?? false;
       const mat = m.material as THREE.MeshBasicMaterial;
       // Azure for a functioning spire — the only sanctioned Starsilk-adjacent
       // colour usage on the globe. Dim slate when dead.
       if (functional) {
+        liveSpires++;
         const phase = spirePhase[id] ?? 0;
         const beat = 0.55 + 0.45 * Math.sin(now * 0.003 + phase);
         mat.color.setRGB(0.16 + beat * 0.2, 0.62 + beat * 0.22, 0.85 + beat * 0.12);
         m.scale.setScalar(1.35);
+        if (ring) {
+          ring.visible = true;
+          ring.scale.setScalar(0.95 + beat * 0.45);
+          (ring.material as THREE.MeshBasicMaterial).opacity = 0.22 + beat * 0.38;
+        }
       } else {
         mat.color.setHex(0x24404d);
         m.scale.setScalar(0.8);
+        if (ring) ring.visible = false;
       }
+    }
+    if (this.harmonicLines) {
+      const cov = liveSpires / Math.max(1, this.spireMeshes.length);
+      const pulse = 0.6 + 0.4 * Math.sin(now * 0.0024);
+      (this.harmonicLines.material as THREE.LineBasicMaterial).opacity =
+        cov * cov * (0.18 + 0.42 * pulse);
     }
     for (const m of this.settlementMeshes) {
       const mat = m.material as THREE.MeshBasicMaterial;

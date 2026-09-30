@@ -103,6 +103,7 @@ export class OrbitalSkiff extends VehicleBase {
   // --- targeting ----------------------------------------------------------
   target: DebrisObject | null = null;
   private targetRing: THREE.Mesh;
+  private thrusterPlumes: THREE.Mesh[] = [];
 
   // --- environment --------------------------------------------------------
   readonly debris: DebrisObject[] = [];
@@ -143,11 +144,12 @@ export class OrbitalSkiff extends VehicleBase {
     hull.name = 'skiff-hull';
 
     // Main hull: an angular, brutalist capsule. Not sleek.
+    // Rotate -PI/2 around Z so radiusTop (2.6) sits at +X (bow) flush with the nose cone (2.6).
     const body = new THREE.Mesh(
       new THREE.CylinderGeometry(2.6, 3.4, 13, 6, 1),
       new THREE.MeshStandardMaterial({ color: PALETTE.steel, metalness: 0.72, roughness: 0.55 }),
     );
-    body.rotation.z = Math.PI / 2;
+    body.rotation.z = -Math.PI / 2;
     hull.add(body);
 
     const nose = new THREE.Mesh(
@@ -157,6 +159,30 @@ export class OrbitalSkiff extends VehicleBase {
     nose.rotation.z = -Math.PI / 2;
     nose.position.x = 9;
     hull.add(nose);
+
+    // Aft main thruster bell + reactive plasma/RCS plumes.
+    const thrusterMat = new THREE.MeshStandardMaterial({ color: PALETTE.darkSteel, metalness: 0.8, roughness: 0.4 });
+    const mainBell = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 2.3, 2.4, 8), thrusterMat);
+    mainBell.rotation.z = -Math.PI / 2;
+    mainBell.position.x = -7.4;
+    hull.add(mainBell);
+
+    const plumeGeo = new THREE.ConeGeometry(1.35, 5.2, 8);
+    plumeGeo.rotateZ(Math.PI / 2);
+    plumeGeo.translate(-2.6, 0, 0);
+    const mainPlume = new THREE.Mesh(
+      plumeGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x6ecbff,
+        transparent: true,
+        opacity: 0.0,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    );
+    mainPlume.position.x = -8.4;
+    hull.add(mainPlume);
+    this.thrusterPlumes.push(mainPlume);
 
     // Radiator fins — weathered, oxidised.
     for (let i = 0; i < 4; i++) {
@@ -170,13 +196,29 @@ export class OrbitalSkiff extends VehicleBase {
       hull.add(fin);
     }
 
-    // Thruster blocks.
-    const thrusterMat = new THREE.MeshStandardMaterial({ color: PALETTE.darkSteel, metalness: 0.8, roughness: 0.4 });
+    // Thruster blocks + auxiliary RCS plumes.
+    const rcsPlumeGeo = new THREE.ConeGeometry(0.55, 2.4, 6);
+    rcsPlumeGeo.rotateZ(Math.PI / 2);
+    rcsPlumeGeo.translate(-1.2, 0, 0);
     for (const [px, py, pz] of [[0, 2.6, 0], [0, -2.6, 0], [0, 0, 2.6], [0, 0, -2.6]]) {
       const t = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 1.15, 2.2, 8), thrusterMat);
       t.position.set(px, py, pz);
-      t.rotation.z = Math.PI / 2;
+      t.rotation.z = -Math.PI / 2;
       hull.add(t);
+
+      const rp = new THREE.Mesh(
+        rcsPlumeGeo,
+        new THREE.MeshBasicMaterial({
+          color: 0xd8c48a,
+          transparent: true,
+          opacity: 0.0,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      );
+      rp.position.set(px - 1.1, py, pz);
+      hull.add(rp);
+      this.thrusterPlumes.push(rp);
     }
 
     // Docking ring at the bow.
@@ -440,9 +482,19 @@ export class OrbitalSkiff extends VehicleBase {
     if (input.pressed('secondary')) this.secondary();
     if (input.pressed('interact')) this.interact();
 
-    // --- audio smoothing --------------------------------------------------
+    // --- audio smoothing & thruster plume VFX -----------------------------
     this.smoothThrust = damp(this.smoothThrust, thrustMag / TRANSLATION_THRUST, 6, step);
     this.smoothSpin = damp(this.smoothSpin, rotMag / ROTATION_THRUST, 6, step);
+    const plumeIntensity = clamp01(this.drive * 0.85 + this.smoothSpin * 0.45);
+    for (let i = 0; i < this.thrusterPlumes.length; i++) {
+      const p = this.thrusterPlumes[i];
+      const mat = p.material as THREE.MeshBasicMaterial;
+      const flicker = 0.82 + 0.18 * Math.sin(this.env.world.elapsed * 38 + i * 2.1);
+      const op = (i === 0 ? this.drive * 0.78 : plumeIntensity * 0.52) * flicker;
+      mat.opacity = op;
+      p.visible = op > 0.02;
+      p.scale.set(0.7 + op * 0.95, 0.85 + op * 0.3, 0.85 + op * 0.3);
+    }
 
     // --- commit transform -------------------------------------------------
     this.object3D.position.copy(this.position);

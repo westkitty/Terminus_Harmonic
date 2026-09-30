@@ -110,6 +110,7 @@ export class LandTrain extends VehicleBase {
   }
   private zoneGroup = new THREE.Group();
   private cargoMeshes: THREE.Object3D[] = [];
+  private brakeMaterials: THREE.MeshStandardMaterial[] = [];
 
   private smoothEngine = 0;
   private smoothRumble = 0;
@@ -141,6 +142,26 @@ export class LandTrain extends VehicleBase {
     const cab = new THREE.Mesh(new THREE.BoxGeometry(4.6, 2.8, 4.2), locoMat);
     cab.position.set(0, 5.0, -3.2);
     loco.add(cab);
+    // Armored cab visor + twin forward headlamps + roof strobe.
+    const visor = new THREE.Mesh(
+      new THREE.BoxGeometry(4.2, 0.75, 0.25),
+      new THREE.MeshStandardMaterial({ color: 0x1a262e, metalness: 0.9, roughness: 0.2 }),
+    );
+    visor.position.set(0, 5.35, -5.32);
+    loco.add(visor);
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0xffebb3, toneMapped: false });
+    for (const lx of [-1.65, 1.65]) {
+      const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 0.4, 8), lampMat);
+      lamp.rotation.x = Math.PI / 2;
+      lamp.position.set(lx, 3.1, -6.35);
+      loco.add(lamp);
+    }
+    const roofBeacon = new THREE.Mesh(
+      new THREE.SphereGeometry(0.32, 8, 6),
+      new THREE.MeshBasicMaterial({ color: PALETTE.amber, toneMapped: false }),
+    );
+    roofBeacon.position.set(0, 6.65, -3.2);
+    loco.add(roofBeacon);
     for (const sx of [-1.5, 1.5]) {
       const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 3.2, 8), steelMat);
       stack.position.set(sx, 5.2, 1.4);
@@ -200,18 +221,34 @@ export class LandTrain extends VehicleBase {
     const wheelMat = new THREE.MeshStandardMaterial({ color: 0x24262a, metalness: 0.85, roughness: 0.45 });
     const wheelGeo = new THREE.CylinderGeometry(1.35, 1.35, 0.85, 14);
     wheelGeo.rotateZ(Math.PI / 2);
+    const strutGeo = new THREE.CylinderGeometry(0.22, 0.28, 1.35, 6);
+    const hubGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.96, 8);
+    hubGeo.rotateZ(Math.PI / 2);
 
     for (let i = 0; i < BOGIE_COUNT; i++) {
       const bogie = new THREE.Group();
       const frame = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.6, 2.2), frameMat);
       frame.position.y = 1.5;
       bogie.add(frame);
+      const brakeMat = new THREE.MeshStandardMaterial({
+        color: 0x3b2820,
+        emissive: 0x000000,
+        metalness: 0.7,
+        roughness: 0.45,
+      });
+      this.brakeMaterials.push(brakeMat);
       const wheels: THREE.Mesh[] = [];
       for (const wx of [-1.9, 1.9]) {
         const w = new THREE.Mesh(wheelGeo, wheelMat);
         w.position.set(wx, 0, 0);
+        const hub = new THREE.Mesh(hubGeo, brakeMat);
+        w.add(hub);
         bogie.add(w);
         wheels.push(w);
+
+        const strut = new THREE.Mesh(strutGeo, frameMat);
+        strut.position.set(wx * 0.82, 0.85, 0);
+        bogie.add(strut);
       }
       const z = -BOGIE_SPACING * (BOGIE_COUNT - 1) * 0.5 + i * BOGIE_SPACING;
       bogie.position.set(0, 0, z);
@@ -223,6 +260,7 @@ export class LandTrain extends VehicleBase {
   setZones(zones: Omit<DeliveryZone, 'marker' | 'delivered'>[]): void {
     this.clearZones();
     for (const z of zones) {
+      const zoneColor = z.kind === 'PICKUP' ? 0x7fa8b8 : 0xc8a24a;
       const geo =
         z.kind === 'PICKUP'
           ? new THREE.CylinderGeometry(z.radius, z.radius, 1.2, 20)
@@ -230,12 +268,27 @@ export class LandTrain extends VehicleBase {
       const marker = new THREE.Mesh(
         geo,
         new THREE.MeshBasicMaterial({
-          color: z.kind === 'PICKUP' ? 0x7fa8b8 : 0xc8a24a,
+          color: zoneColor,
           transparent: true,
           opacity: 0.32,
           toneMapped: false,
         }),
       );
+      // Tall depot gantry pylon + beacon ring so pickup/dropoff zones are visible across the sector.
+      const pylon = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.45, 0.85, 18, 6),
+        new THREE.MeshStandardMaterial({ color: PALETTE.darkSteel, metalness: 0.7, roughness: 0.5 }),
+      );
+      pylon.position.set(z.radius * 0.75, 8.5, 0);
+      marker.add(pylon);
+      const beacon = new THREE.Mesh(
+        new THREE.TorusGeometry(2.4, 0.28, 6, 16),
+        new THREE.MeshBasicMaterial({ color: zoneColor, toneMapped: false }),
+      );
+      beacon.rotation.x = Math.PI / 2;
+      beacon.position.set(z.radius * 0.75, 17.6, 0);
+      marker.add(beacon);
+
       marker.position.copy(z.position);
       marker.position.y = this.env.field.elevation(z.position.x, z.position.z) + 0.6;
       this.zoneGroup.add(marker);
@@ -470,6 +523,10 @@ export class LandTrain extends VehicleBase {
       b.mesh.position.set(host.position.x, gy - 0.55 + b.travel * 0.5, host.position.z);
       b.mesh.rotation.y = host.heading + (i === 0 ? this.steerAngle * 0.25 : 0);
       b.mesh.visible = host.mesh.visible;
+    }
+    const glow = clamp01((this.brakeTemp - 110) / 520);
+    for (const bm of this.brakeMaterials) {
+      bm.emissive.setRGB(glow * 0.92, glow * 0.28, glow * 0.04);
     }
     for (let i = 0; i < this.cargoMeshes.length; i++) {
       this.cargoMeshes[i].visible = i < this.cargoModules;

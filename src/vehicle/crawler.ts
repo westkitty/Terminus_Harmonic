@@ -120,11 +120,24 @@ export class StrataCrawler extends VehicleBase {
     body.position.y = HULL_HEIGHT * 0.5 + 1.2;
     hull.add(body);
 
-    // Sloped glacis plate at the front — the cutter housing.
+    // Sloped glacis plate at the front — the cutter housing + twin hydraulic boom arms + floodlamps.
     const glacis = new THREE.Mesh(new THREE.BoxGeometry(HULL_WIDTH, 1.4, 3.2), steelMat);
     glacis.position.set(0, 1.9, HULL_LENGTH * 0.5 + 1.0);
     glacis.rotation.x = -0.5;
     hull.add(glacis);
+
+    for (const sx of [-2.1, 2.1]) {
+      const boom = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.75, 3.6), steelMat);
+      boom.position.set(sx, 1.55, HULL_LENGTH * 0.5 + 0.8);
+      hull.add(boom);
+      const lamp = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.28, 0.34, 0.35, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffebb3, toneMapped: false }),
+      );
+      lamp.rotation.x = Math.PI / 2;
+      lamp.position.set(sx, 3.4, HULL_LENGTH * 0.5 + 0.15);
+      hull.add(lamp);
+    }
 
     // Reactor hump.
     const reactor = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.4, 3.0, 10), steelMat);
@@ -153,10 +166,11 @@ export class StrataCrawler extends VehicleBase {
   private buildTracks(): void {
     const frameMat = new THREE.MeshStandardMaterial({ color: 0x1e2124, metalness: 0.8, roughness: 0.55 });
     const wheelMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, metalness: 0.85, roughness: 0.45 });
+    // Rotate around Z by PI/2 so wheel axles lie along X (left-right) and roll around X.
     const wheelGeo = new THREE.CylinderGeometry(1.1, 1.1, 0.7, 12);
-    wheelGeo.rotateX(Math.PI / 2);
+    wheelGeo.rotateZ(Math.PI / 2);
     const roadWheelGeo = new THREE.CylinderGeometry(0.85, 0.85, 0.55, 10);
-    roadWheelGeo.rotateX(Math.PI / 2);
+    roadWheelGeo.rotateZ(Math.PI / 2);
 
     for (const side of [-1, 1]) {
       const track = new THREE.Group();
@@ -164,15 +178,19 @@ export class StrataCrawler extends VehicleBase {
       const belt = new THREE.Mesh(new THREE.BoxGeometry(TRACK_WIDTH, 0.45, TRACK_LENGTH), frameMat);
       belt.position.y = 0.35;
       track.add(belt);
+      const upperRun = new THREE.Mesh(new THREE.BoxGeometry(TRACK_WIDTH * 0.92, 0.25, TRACK_LENGTH * 0.92), frameMat);
+      upperRun.position.y = 1.65;
+      track.add(upperRun);
       // Drive sprocket + idler.
+      const wheels: THREE.Mesh[] = [];
       for (const [z, r] of [[TRACK_LENGTH * 0.45, 1.25], [-TRACK_LENGTH * 0.45, 1.25]] as [number, number][]) {
         const sprocket = new THREE.Mesh(wheelGeo, wheelMat);
         sprocket.scale.set(1, r / 1.1, r / 1.1);
         sprocket.position.set(0, 0.9, z);
         track.add(sprocket);
+        wheels.push(sprocket);
       }
       // Road wheels.
-      const wheels: THREE.Mesh[] = [];
       for (let i = 0; i < 5; i++) {
         const w = new THREE.Mesh(roadWheelGeo, wheelMat);
         w.position.set(0, 0.8, -TRACK_LENGTH * 0.4 + (i * TRACK_LENGTH * 0.8) / 4);
@@ -190,20 +208,22 @@ export class StrataCrawler extends VehicleBase {
     geo.rotateX(Math.PI / 2);
     const m = new THREE.Mesh(
       geo,
-      new THREE.MeshStandardMaterial({ color: 0x3a3d40, metalness: 0.9, roughness: 0.35 }),
+      new THREE.MeshStandardMaterial({ color: 0x3a3d40, emissive: 0x000000, metalness: 0.9, roughness: 0.35 }),
     );
     m.position.set(0, 1.4, HULL_LENGTH * 0.5 + 1.4);
-    // Cutter teeth — this is a machine, not a creature.
+    // Cutter teeth in the local frame of the cutterhead drum (centred on 0,0,1.15).
+    const toothMat = new THREE.MeshStandardMaterial({ color: 0x6e6a60, metalness: 0.85, roughness: 0.4 });
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
-      const tooth = new THREE.Mesh(
-        new THREE.BoxGeometry(0.5, 1.5, 0.9),
-        new THREE.MeshStandardMaterial({ color: 0x6e6a60, metalness: 0.85, roughness: 0.4 }),
-      );
-      tooth.position.set(Math.cos(a) * CUTTER_RADIUS * 0.92, 1.4 + Math.sin(a) * CUTTER_RADIUS * 0.92, HULL_LENGTH * 0.5 + 2.6);
+      const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.5, 0.9), toothMat);
+      tooth.position.set(Math.cos(a) * CUTTER_RADIUS * 0.88, Math.sin(a) * CUTTER_RADIUS * 0.88, 1.15);
       tooth.rotation.z = a;
       m.add(tooth);
     }
+    const coreCone = new THREE.Mesh(new THREE.ConeGeometry(CUTTER_RADIUS * 0.38, 1.6, 8), toothMat);
+    coreCone.rotation.x = Math.PI / 2;
+    coreCone.position.set(0, 0, 1.6);
+    m.add(coreCone);
     this.object3D.add(m);
     return m;
   }
@@ -437,9 +457,12 @@ export class StrataCrawler extends VehicleBase {
     this.tracks[1].speed = this.trackSpeed - turnRate * 2.4;
     const spin = step * ((this.tracks[0].speed + this.tracks[1].speed) * 0.5) / 1.1;
     for (const t of this.tracks) {
-      for (const w of t.wheels) w.rotation.y -= spin;
+      for (const w of t.wheels) w.rotation.x -= spin;
     }
     this.cutterHead.rotation.z -= step * (0.4 + this.cutterSpin * 9);
+    const cutterMat = this.cutterHead.material as THREE.MeshStandardMaterial;
+    const heatGlow = clamp01((this.cutterTemp - 0.25) / 0.75);
+    cutterMat.emissive.setRGB(heatGlow * 0.95, heatGlow * 0.32, heatGlow * 0.05);
     const ringMat = this.cutterRing.material as THREE.MeshBasicMaterial;
     ringMat.opacity = this.drilling ? 0.3 + 0.35 * Math.abs(Math.sin(performance.now() * 0.02)) : 0.12;
     ringMat.color.setHex(overheated ? 0xd03a1a : 0xd08a3a);

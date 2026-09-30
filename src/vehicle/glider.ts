@@ -103,6 +103,7 @@ export class AtmosphericGlider extends VehicleBase {
   private deployedSensors = 0;
   private sensorGroup = new THREE.Group();
   private thermalGroup = new THREE.Group();
+  private navStrobes: THREE.Mesh[] = [];
   private mappedCells = 0;
 
   private _v1 = new THREE.Vector3();
@@ -141,23 +142,42 @@ export class AtmosphericGlider extends VehicleBase {
     fuselage.rotation.x = Math.PI / 2;
     airframe.add(fuselage);
     const nose = new THREE.Mesh(new THREE.ConeGeometry(0.55, 2.2, 10), dark);
-    nose.rotation.x = -Math.PI / 2;
-    nose.position.z = 5.6;
+    nose.rotation.x = Math.PI / 2;
+    nose.position.z = 5.7;
     airframe.add(nose);
+    const pitot = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.06, 1.8, 6), amber);
+    pitot.rotation.x = Math.PI / 2;
+    pitot.position.z = 7.4;
+    airframe.add(pitot);
 
-    // Wing: long, thin, slightly swept.
+    // Wing: long, thin, slightly swept with upper sensor/solar strips.
     const wingGeo = new THREE.BoxGeometry(WING_SPAN, 0.22, 3.1);
     const wing = new THREE.Mesh(wingGeo, skin);
     wing.position.set(0, 0.1, 0.6);
     airframe.add(wing);
-    // Wingtip fairings.
+    const solarMat = new THREE.MeshStandardMaterial({
+      color: 0x1e2c36,
+      metalness: 0.78,
+      roughness: 0.24,
+    });
+    const solarStrip = new THREE.Mesh(new THREE.BoxGeometry(WING_SPAN * 0.82, 0.04, 1.55), solarMat);
+    solarStrip.position.set(0, 0.23, 0.55);
+    airframe.add(solarStrip);
+
+    // Wingtip fairings + port/starboard navigation strobes.
     for (const sx of [-1, 1]) {
       const tip = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 2.4), dark);
       tip.position.set(sx * WING_SPAN * 0.5, 0.15, 0.7);
       airframe.add(tip);
+      const navColor = sx < 0 ? 0xe05244 : 0x48c878;
+      const nav = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 8, 6),
+        new THREE.MeshBasicMaterial({ color: navColor, toneMapped: false }),
+      );
+      nav.position.set(sx * (WING_SPAN * 0.5 + 0.28), 0.22, 1.1);
+      airframe.add(nav);
+      this.navStrobes.push(nav);
     }
-    // Dihedral via rotation of the tip sections is skipped; the slab wing with
-    // visible panel lines reads correctly at this scale.
 
     // Tail.
     const tail = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.16, 1.5), skin);
@@ -183,8 +203,9 @@ export class AtmosphericGlider extends VehicleBase {
 
     // Survey strobe — engineering marking, not decoration.
     const strobe = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), new THREE.MeshBasicMaterial({ color: amber.color, toneMapped: false }));
-    strobe.position.set(0, 1.5, -4.4);
+    strobe.position.set(0, 1.95, -4.4);
     airframe.add(strobe);
+    this.navStrobes.push(strobe);
 
     this.object3D.add(airframe);
   }
@@ -463,7 +484,11 @@ export class AtmosphericGlider extends VehicleBase {
     if (input.pressed('primary')) this.primary();
     if (input.pressed('interact')) this.interact();
 
-    // --- audio -------------------------------------------------------------
+    // --- audio & strobe pulse ----------------------------------------------
+    const blink = 0.65 + 0.55 * Math.sin(t * 6.0);
+    for (const s of this.navStrobes) {
+      s.scale.setScalar(blink);
+    }
     this.object3D.position.copy(this.position);
     this.object3D.quaternion.copy(this.quaternion);
   }

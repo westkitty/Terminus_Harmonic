@@ -7,8 +7,9 @@
  * It is used both for the orbital sky (thin atmosphere, strong stars) and the
  * surface sky (thick, polluted, dust-laden).
  *
- * The polluted remnant world is modelled with elevated Mie extinction and a
- * warm-scatter bias from suspended industrial particulate.
+ * The polluted remnant world is modelled with elevated Mie extinction,
+ * warm-scatter particulate striation near the horizon, a distortion-free 3D
+ * starfield, and the canonical Siege Wall starless-absence swath overhead.
  */
 
 import * as THREE from 'three';
@@ -55,11 +56,11 @@ float hgPhase(float cosTheta, float g) {
   return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-4), 1.5));
 }
 
-// Cheap deterministic hash for the star field.
-float hash(vec2 p) {
-  p = fract(p * vec2(443.8975, 397.2973));
-  p += dot(p.xy, p.yx + 19.19);
-  return fract(p.x * p.y);
+// Distortion-free 3D cell hash for celestial coordinates.
+float hash3(vec3 p) {
+  p = fract(p * vec3(443.8975, 397.2973, 491.1871));
+  p += dot(p, p.yzx + 19.19);
+  return fract((p.x + p.y) * p.z);
 }
 
 void main() {
@@ -86,9 +87,10 @@ void main() {
 
   vec3 color = scattering * extinction * airMass * 0.055;
 
-  // Horizon compression: thick near the horizon, dark overhead.
+  // Horizon compression and suspended industrial particulate striation.
   float horizon = pow(1.0 - clamp(elevation, 0.0, 1.0), uHorizonPower);
-  color = mix(color, color * 1.9 + uMieColor * 0.05 * uTurbidity, horizon);
+  float dustBand = 0.5 + 0.5 * sin(elevation * 34.0 + dir.x * 4.2 - dir.z * 3.1);
+  color = mix(color, color * (1.75 + 0.25 * dustBand) + uMieColor * (0.04 + 0.025 * dustBand) * uTurbidity, horizon);
 
   // Ground-side falloff: below the horizon the sky is occluded by terrain, so
   // darken rather than sampling air.
@@ -99,15 +101,26 @@ void main() {
   float halo = pow(sunAmount, 220.0) * 0.6 + pow(sunAmount, 12.0) * 0.05;
   color += vec3(1.0, 0.94, 0.82) * (disc * 14.0 + halo) * (1.0 - uTurbidity * 0.45);
 
-  // Stars: only where the atmosphere is thin and the view is up.
-  if (uStarIntensity > 0.001) {
-    vec2 sph = vec2(atan(dir.z, dir.x) * 0.1591549 + 0.5, asin(clamp(dir.y, -1.0, 1.0)) * 0.3183099 + 0.5);
-    vec2 g = floor(sph * 900.0);
-    float h = hash(g);
-    float star = step(0.9988, h);
-    float tw = 0.6 + 0.4 * sin(h * 90.0);
-    float fade = smoothstep(0.02, 0.4, elevation) * (1.0 - uTurbidity * 0.85);
-    color += vec3(0.85, 0.9, 1.0) * star * tw * uStarIntensity * fade * 2.2;
+  // Siege Wall: vast irregular swath of starless blackness (cosmological absence, zero glowing outline).
+  float swathCoord = dir.x * 0.78 - dir.z * 0.62;
+  float swathWarp = sin(dir.z * 5.3 + dir.y * 3.7) * 0.09 + cos(dir.x * 9.1 - dir.y * 4.2) * 0.05;
+  float siegeAbsence = smoothstep(0.24, 0.06, abs(swathCoord + swathWarp - 0.22)) * smoothstep(0.05, 0.32, elevation);
+  color *= (1.0 - siegeAbsence * 0.45 * clamp(uStarIntensity, 0.0, 1.0));
+
+  // Stars: 3D direction-cell field where the atmosphere is thin, extinguished inside the Siege Wall absence.
+  if (uStarIntensity > 0.001 && elevation > 0.01) {
+    vec3 cellA = floor(dir * 320.0);
+    float hA = hash3(cellA);
+    float starA = step(0.9965, hA) * (0.6 + 0.4 * sin(hA * 90.0));
+
+    vec3 cellB = floor(dir * 145.0 + 17.3);
+    float hB = hash3(cellB);
+    float starB = step(0.9985, hB) * 1.45;
+
+    float tint = hash3(cellA + 7.1);
+    vec3 starCol = mix(vec3(0.96, 0.87, 0.74), vec3(0.78, 0.89, 1.0), tint);
+    float fade = smoothstep(0.02, 0.4, elevation) * (1.0 - uTurbidity * 0.85) * (1.0 - siegeAbsence);
+    color += starCol * (starA + starB) * uStarIntensity * fade * 2.2;
   }
 
   color *= uExposure;

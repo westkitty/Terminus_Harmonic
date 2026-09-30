@@ -469,4 +469,132 @@ describe('Quality uplift regressions', () => {
 
     game.dispose();
   });
+
+  it('verifies VAS-01..VAS-05 visual asset geometry, shader, environment, and icon pipeline', async () => {
+    const fs = await import('node:fs');
+    const zlib = await import('node:zlib');
+    const THREE = await import('three');
+    const { CommandGlobe } = await import('../src/render/globe');
+    const { SkyDome } = await import('../src/render/sky');
+    const { SectorEnvironment } = await import('../src/render/environment');
+    const { SectorField, TunnelLattice } = await import('../src/sector/field');
+    const { World } = await import('../src/core/ecs');
+    const { InputManager, DEFAULT_BINDINGS } = await import('../src/core/input');
+    const { PlanetaryState } = await import('../src/state/planetary');
+    const { OrbitalSkiff } = await import('../src/vehicle/orbital');
+    const { StrataCrawler } = await import('../src/vehicle/crawler');
+    const { AtmosphericGlider } = await import('../src/vehicle/glider');
+
+    // VAS-01: Inspect generated PNG icon IDAT scanlines to verify deep obsidian void background (#07080a), not blown-out white (#ffffff).
+    for (const iconPath of ['public/icons/icon-192.png', 'public/icons/icon-512.png', 'public/icons/icon-maskable-512.png']) {
+      const buf = fs.readFileSync(iconPath);
+      expect(buf.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe(true);
+      // Extract IDAT payload (starts at byte 8 + 25 (IHDR) + 8 = 41).
+      const idatLen = buf.readUInt32BE(33);
+      const raw = zlib.inflateSync(buf.subarray(41, 41 + idatLen));
+      // First pixel after filter byte 0 at top-left corner (x=0, y=0) is deep obsidian void (R,G,B < 20, A = 255).
+      expect(raw[1]).toBeLessThan(20);
+      expect(raw[2]).toBeLessThan(20);
+      expect(raw[3]).toBeLessThan(24);
+      expect(raw[4]).toBe(255);
+    }
+
+    // VAS-02: CommandGlobe spires and crisis markers are oriented radially along +Z, and harmonicLines connects the 12 spires.
+    const globe = new CommandGlobe(1337, 100, 'TOPOGRAPHY');
+    let spireFound = false;
+    let harmonicFound = false;
+    globe.group.traverse((obj) => {
+      if (obj.userData?.spireId !== undefined && obj.type === 'Mesh') {
+        const mesh = obj as InstanceType<typeof THREE.Mesh>;
+        mesh.geometry.computeBoundingBox();
+        if (mesh.geometry.boundingBox && mesh.geometry.boundingBox.max.z > 3.0) {
+          spireFound = true;
+        }
+      }
+      if (obj.type === 'LineSegments' && obj !== globe.group.children[4]) {
+        harmonicFound = true;
+      }
+    });
+    expect(spireFound).toBe(true);
+    expect(harmonicFound).toBe(true);
+    globe.dispose();
+
+    // VAS-03: SkyDome shader includes 3D direction-cell hash3 starfield and Siege Wall starless-absence swath.
+    const sky = new SkyDome(1000);
+    const frag = (sky.mesh.material as InstanceType<typeof THREE.ShaderMaterial>).fragmentShader;
+    expect(frag).toContain('hash3');
+    expect(frag).toContain('siegeAbsence');
+    sky.dispose();
+
+    // VAS-04: SectorEnvironment preserves setSunDirection across update(), builds biome landmarks, and clamps distant spires to horizon ring.
+    const field = new SectorField({
+      seed: 42,
+      lat: 10,
+      lon: 20,
+      radius: 2048,
+      biome: 'FOUNDRY_RUIN',
+      geothermalPressure: 0.5,
+      tectonicShear: 0.5,
+      atmosphereToxicity: 0.5,
+      soilViability: 0.5,
+      turbulence: 0.2,
+    });
+    const sectorEnv = new SectorEnvironment(field, { shadows: false, shadowMapSize: 512, particleScale: 0.5 });
+    sectorEnv.setSunDirection(new THREE.Vector3(-0.8, 0.5, -0.3));
+    const cam = new THREE.PerspectiveCamera();
+    cam.position.set(0, 10, 0);
+    sectorEnv.update(1 / 60, 1.0, cam);
+    expect(sectorEnv.sun.position.x).toBeLessThan(0);
+    expect(sectorEnv.sun.position.z).toBeLessThan(0);
+    sectorEnv.buildSpires([0, 1, 2, 3], [true, true, false, true]);
+    const spireGroup = sectorEnv.group.children.find((c) => c.userData?.spireId !== undefined)!;
+    const spireDist = Math.hypot(spireGroup.position.x, spireGroup.position.z);
+    expect(spireDist).toBeGreaterThanOrEqual(180);
+    expect(spireDist).toBeLessThanOrEqual(920);
+    const landmarkChild = sectorEnv.group.children.find((c) => c.name.startsWith('landmark-'));
+    expect(landmarkChild).toBeTruthy();
+    sectorEnv.dispose();
+
+    // VAS-05: Glider nose cone points forward (+PI/2), OrbitalSkiff hull matches bow taper (-PI/2), StrataCrawler cutter teeth are local to drum.
+    const world = new World();
+    const canvas = dom.window.document.getElementById('scene') as HTMLCanvasElement;
+    const input = new InputManager(canvas, DEFAULT_BINDINGS);
+    const lattice = new TunnelLattice(4, 128, 64);
+    lattice.configure(0, 0, field.elevation(0, 0));
+    const vEnv = {
+      world,
+      input,
+      field,
+      lattice,
+      planetary: new PlanetaryState(42),
+      sunDirection: new THREE.Vector3(0, 1, 0),
+      wind: new THREE.Vector3(),
+      camera: cam,
+      impact: () => {},
+      blip: () => {},
+      reportObjective: () => {},
+      particleScale: 0.5,
+      reducedMotion: false,
+    };
+
+    const glider = new AtmosphericGlider(world, vEnv);
+    const airframe = glider.object3D.children[0];
+    const gliderNose = airframe.children[1];
+    expect(gliderNose.rotation.x).toBeCloseTo(Math.PI / 2, 4);
+
+    const skiff = new OrbitalSkiff(world, vEnv);
+    const skiffHull = skiff.object3D.children[0];
+    const skiffBody = skiffHull.children[0];
+    expect(skiffBody.rotation.z).toBeCloseTo(-Math.PI / 2, 4);
+
+    const crawler = new StrataCrawler(world, vEnv);
+    const cutterHead = crawler.object3D.children.find((c) => c.children.length >= 10)!;
+    const cutterTooth = cutterHead.children[0];
+    expect(Math.abs(cutterTooth.position.z)).toBeLessThan(2.0);
+
+    glider.dispose();
+    skiff.dispose();
+    crawler.dispose();
+    input.dispose();
+  });
 });

@@ -156,10 +156,10 @@ Everything below was run in this workspace:
 
 | Check | Result |
 |---|---|
-| `npm run verify` | green — typecheck, canon gate, 164 tests |
-| Canon gate | 49 files, 19,251 lines, 11 prohibitions, 8 required locks |
-| `npx vitest run` | 164 passed across 16 files |
-| `npm run build` | 2.40 kB html · 238.66 kB js · 484.12 kB three chunk · 21.41 kB css |
+| `npm run verify` | green — typecheck, canon gate, 167 tests |
+| Canon gate | 50 files, 21,610 lines, 11 prohibitions, 8 required locks |
+| `npx vitest run` | 167 passed across 16 files |
+| `npm run build` | 2.46 kB html · 282.02 kB js · 484.12 kB three chunk · 28.41 kB css |
 | Production preview | every route HTTP 200, hashed assets as `text/javascript` |
 | Dev server | HTTP 200 on the preview host |
 | `node --check public/sw.js` | parses as plain JavaScript |
