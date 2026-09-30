@@ -48,11 +48,13 @@ export interface SettingsRecord {
   musicVolume: number;
   reducedMotion: boolean;
   highContrast: boolean;
+  colorblindMode: boolean;
   largeText: boolean;
   screenShake: boolean;
   showPerf: boolean;
   invertY: boolean;
   touchControls: boolean;
+  autoSaveIntervalMinutes: number;
   bindings: Record<string, string[]>;
 }
 
@@ -287,11 +289,13 @@ export function defaultSettings(): SettingsRecord {
     musicVolume: 0.55,
     reducedMotion: false,
     highContrast: false,
+    colorblindMode: false,
     largeText: false,
     screenShake: true,
     showPerf: false,
     invertY: false,
     touchControls: true,
+    autoSaveIntervalMinutes: 5,
     bindings: {},
   };
 }

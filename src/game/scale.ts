@@ -224,6 +224,27 @@ readonly scenes = {
     );
   }
 
+  /** Snap macro camera to standard viewing perspectives (Equator, Poles, or Reset). */
+  snapMacroCamera(angle: 'EQUATOR' | 'NORTH_POLE' | 'SOUTH_POLE' | 'RESET'): void {
+    this.macroFocus.set(0, 0, 0);
+    switch (angle) {
+      case 'EQUATOR':
+        this.macroOrbit.phi = Math.PI / 2;
+        break;
+      case 'NORTH_POLE':
+        this.macroOrbit.phi = 0.08;
+        break;
+      case 'SOUTH_POLE':
+        this.macroOrbit.phi = Math.PI - 0.08;
+        break;
+      case 'RESET':
+        this.macroOrbit.theta = 0.7;
+        this.macroOrbit.phi = 1.15;
+        this.macroOrbit.targetDistance = 290;
+        break;
+    }
+  }
+
   updateMacroCamera(dt: number): void {
     const cam = this.cameras.MACRO;
     const o = this.macroOrbit;

@@ -26,6 +26,7 @@ import {
   DOMAINS,
   SETTLEMENTS,
   WORLD_SEED,
+  latLonBiome,
   type BiomeId,
   type CrisisId,
   type Domain,
@@ -45,6 +46,7 @@ import { CrisisController, type CompletionReport } from './crisis';
 import { ScaleManager, type Scale } from './scale';
 import { CommandGlobe, OVERLAY_MODES, type OverlayMode } from '../render/globe';
 import { SkyDome } from '../render/sky';
+import { StarField } from '../render/starfield';
 import { OrbitalLayer } from '../render/orbitalLayer';
 import { SectorEnvironment, hazardForBiome, localAtmosphereDensity } from '../render/environment';
 import { SectorField, TunnelLattice } from '../sector/field';
@@ -103,6 +105,9 @@ export class Game {
   private skyMacro: SkyDome;
   private skyOrbit: SkyDome;
   private skySector: SkyDome;
+  private starfieldMacro: StarField;
+  private starfieldOrbit: StarField;
+  private starfieldSector: StarField;
   private orbitalLayer: OrbitalLayer;
 
   // --- sector runtime (one at a time) ---
@@ -125,6 +130,13 @@ export class Game {
   private lastFrameTime = 0;
   private playStart = 0;
   private shakeAmount = 0;
+  private simTimeMultiplier = 1;
+  private autoSaveTimer = 0;
+  private headlightsLight: THREE.SpotLight | null = null;
+  private headlightsOn = false;
+  private autoLevelActive = false;
+  private cruiseControlActive = false;
+  private lastGpwsBeep = 0;
 
   // Scratch
   private _v1 = new THREE.Vector3();
@@ -185,14 +197,17 @@ export class Game {
     this.skyMacro = new SkyDome(40000);
     this.skyOrbit = new SkyDome(2.4e7);
     this.skySector = new SkyDome(9000);
+    this.starfieldMacro = new StarField({ count: 4500, radius: 8000, parallaxScale: 1.4, seed: WORLD_SEED ^ 0x5741 });
+    this.starfieldOrbit = new StarField({ count: 4500, radius: 80000, parallaxScale: 0.35, seed: WORLD_SEED ^ 0x5741 });
+    this.starfieldSector = new StarField({ count: 3200, radius: 5000, parallaxScale: 0.18, seed: WORLD_SEED ^ 0x5741 });
     this.orbitalLayer = new OrbitalLayer(WORLD_SEED);
 
     this.scale = new ScaleManager(this.renderer, this.settings.reducedMotion);
     // Wired here rather than in start(): a scale change is a simulation event,
     // not an input event, and must be handled whether or not the rAF loop runs.
     this.scale.onScaleChanged = (next) => this.onScaleChanged(next);
-    this.scale.scenes.MACRO.add(this.globe.group, this.skyMacro.mesh);
-    this.scale.scenes.ORBIT.add(this.orbitalLayer.group, this.skyOrbit.mesh);
+    this.scale.scenes.MACRO.add(this.globe.group, this.skyMacro.mesh, this.starfieldMacro.points);
+    this.scale.scenes.ORBIT.add(this.orbitalLayer.group, this.skyOrbit.mesh, this.starfieldOrbit.points);
     // SECTOR scene is populated on descent.
 
     this.input = new InputManager(canvas, DEFAULT_BINDINGS);
@@ -205,6 +220,7 @@ export class Game {
       onOverlayChange: (m) => this.globe.setOverlay(m),
       onSelectNode: (id) => this.selectNode(id),
       onStartCrisis: (id) => this.startCrisis(id as CrisisId),
+      onAbandonCrisis: (id) => this.abandonCrisis(id),
       onAscend: () => this.ascend(),
       onSettingsChange: (patch) => this.applySettings(patch),
       onRebind: (action, code) => this.rebind(action, code),
@@ -217,6 +233,55 @@ export class Game {
       onCycleCamera: () => this.cycleCamera(),
       onPingSpire: (spireId) => this.pingSpire(spireId),
       onSelectSettlement: (id) => this.selectSettlement(id),
+      onTimeWarpChange: (multiplier) => {
+        this.simTimeMultiplier = multiplier;
+        this.bus.emit(Events.Toast, {
+          message: multiplier === 0 ? 'Simulation Paused' : `Simulation Speed: ${multiplier}x`,
+          kind: '',
+        });
+      },
+      onToggleMute: () => {
+        const muted = this.audio.toggleMute();
+        this.ui.setAudioMuted(muted);
+        this.bus.emit(Events.Toast, {
+          message: muted ? 'Audio Muted' : 'Audio Unmuted',
+          kind: '',
+        });
+        return muted;
+      },
+      onSnapCamera: (angle) => {
+        this.scale.snapMacroCamera(angle);
+        this.audio.playUiClick();
+      },
+      onCopySave: async () => {
+        try {
+          const json = this.serializeSave();
+          if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(json);
+            this.bus.emit(Events.Toast, { message: 'Campaign save code copied to clipboard!', kind: 'good' });
+            this.audio.playSuccessChime();
+          } else if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+            window.prompt('Copy campaign save JSON:', json);
+          }
+        } catch {
+          if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+            window.prompt('Copy campaign save JSON:', this.serializeSave());
+          }
+        }
+      },
+      onPasteSave: (text: string) => {
+        this.importSave(text);
+      },
+      onSoundTrigger: (sound) => {
+        switch (sound) {
+          case 'click': this.audio.playUiClick(); break;
+          case 'hover': this.audio.playUiHover(); break;
+          case 'modalOpen': this.audio.playUiModal(true); break;
+          case 'modalClose': this.audio.playUiModal(false); break;
+          case 'warning': this.audio.playWarningBeep(); break;
+          case 'success': this.audio.playSuccessChime(); break;
+        }
+      },
     });
     this.ui.touchMove = (x, y) => this.input.setTouchAxis(x, 0, -y);
     this.ui.touchLook = (dx, dy) => this.input.addTouchLook(dx, dy);
@@ -483,10 +548,20 @@ export class Game {
     this.input.beginFrame();
 
     // Global keyboard handling that is not vehicle-specific.
-    this.handleGlobalInput();
+    this.handleGlobalInput(dt);
 
-    // Simulation.
-    this.world.update(dt);
+    // Auto-save check based on user settings.
+    const autoSaveInterval = this.settings.autoSaveIntervalMinutes ?? 5;
+    if (autoSaveInterval > 0) {
+      this.autoSaveTimer += dt;
+      if (this.autoSaveTimer >= autoSaveInterval * 60) {
+        this.autoSaveTimer = 0;
+        void this.saveGame(false);
+      }
+    }
+
+    // Simulation scaled by simulation time warp multiplier.
+    this.world.update(dt * this.simTimeMultiplier);
 
     // The Terminus Harmonic is the campaign's payoff: the network establishes
     // itself once enough of it is live and what is live agrees on phase.
@@ -505,14 +580,9 @@ export class Game {
     this.input.endFrame();
   };
 
-  private handleGlobalInput(): void {
+  private handleGlobalInput(dt: number): void {
     if (this.ui.isSettingsOpen || this.ui.isBriefingOpen || this.ui.isCodexOpen) {
       this.input.setEnabled(false);
-      if (this.input.pressed('pause')) {
-        if (this.ui.isSettingsOpen) this.ui.closeSettings();
-        if (this.ui.isBriefingOpen) this.ui.closeBriefing();
-        if (this.ui.isCodexOpen) this.ui.closeCodex();
-      }
       return;
     }
     this.input.setEnabled(true);
@@ -521,8 +591,12 @@ export class Game {
       this.ui.openSettings();
       return;
     }
-    if (this.input.pressed('map')) {
-      if (this.scale.scale !== 'MACRO') this.ascend();
+    if (this.input.pressed('codex') && this.scale.scale === 'MACRO') {
+      this.ui.openCodex();
+      return;
+    }
+    if ((this.input.pressed('ascendMacro') || this.input.pressed('map')) && this.scale.scale !== 'MACRO') {
+      this.ascend();
       return;
     }
     if (this.input.pressed('overlayNext') && this.scale.scale === 'MACRO') {
@@ -530,19 +604,110 @@ export class Game {
       const i = modes.indexOf(this.globe.getOverlay());
       this.ui.setOverlay(modes[(i + 1) % modes.length]);
     }
+    if (this.input.pressed('overlayPrev') && this.scale.scale === 'MACRO') {
+      const modes: OverlayMode[] = ['TOPOGRAPHY', 'ATMOSPHERE', 'GEOLOGY', 'BIOSPHERE', 'ORBIT', 'LOGISTICS', 'HARMONIC'];
+      const i = modes.indexOf(this.globe.getOverlay());
+      this.ui.setOverlay(modes[(i - 1 + modes.length) % modes.length]);
+    }
+    if (this.input.pressed('timeWarpPause') && this.scale.scale === 'MACRO') {
+      const next = this.simTimeMultiplier === 0 ? 1 : 0;
+      this.simTimeMultiplier = next;
+      this.ui.setTimeWarp(next);
+      this.bus.emit(Events.Toast, { message: next === 0 ? 'Simulation Paused' : 'Simulation 1x', kind: '' });
+    }
+    if (this.input.pressed('timeWarpFaster') && this.scale.scale === 'MACRO') {
+      const speeds = [0, 1, 2, 5];
+      const curIdx = speeds.indexOf(this.simTimeMultiplier);
+      const next = speeds[Math.min(speeds.length - 1, curIdx + 1)];
+      this.simTimeMultiplier = next;
+      this.ui.setTimeWarp(next);
+      this.bus.emit(Events.Toast, { message: `Simulation Speed: ${next}x`, kind: '' });
+    }
+    if (this.input.pressed('timeWarpSlower') && this.scale.scale === 'MACRO') {
+      const speeds = [0, 1, 2, 5];
+      const curIdx = speeds.indexOf(this.simTimeMultiplier);
+      const next = speeds[Math.max(0, (curIdx < 0 ? 1 : curIdx) - 1)];
+      this.simTimeMultiplier = next;
+      this.ui.setTimeWarp(next);
+      this.bus.emit(Events.Toast, { message: next === 0 ? 'Simulation Paused' : `Simulation Speed: ${next}x`, kind: '' });
+    }
+    if (this.input.pressed('resetCamera') && this.scale.scale === 'MACRO') {
+      this.scale.snapMacroCamera('RESET');
+      this.audio.playUiClick();
+    }
+    if (this.input.pressed('muteToggle')) {
+      const muted = this.ui.toggleMute();
+      this.bus.emit(Events.Toast, { message: muted ? 'Audio Muted' : 'Audio Unmuted', kind: '' });
+    }
+    if (this.input.pressed('quickSave')) {
+      void this.saveGame(true);
+      this.audio.playSuccessChime();
+      this.bus.emit(Events.Toast, { message: 'Quick Save created', kind: 'good' });
+    }
+    if (this.input.pressed('quickLoad')) {
+      void this.loadGame();
+      this.audio.playSuccessChime();
+      this.bus.emit(Events.Toast, { message: 'Quick Load restored', kind: 'good' });
+    }
+    if (this.input.pressed('headlights') && this.scale.scale !== 'MACRO') {
+      this.toggleHeadlights();
+    }
+    if (this.input.pressed('autoLevel') && this.scale.scale !== 'MACRO') {
+      this.autoLevelActive = !this.autoLevelActive;
+      this.audio.playUiClick();
+      this.bus.emit(Events.Toast, {
+        message: this.autoLevelActive ? 'Horizon Auto-Level: ENGAGED' : 'Horizon Auto-Level: DISENGAGED',
+        kind: this.autoLevelActive ? 'good' : '',
+      });
+    }
+    if (this.input.pressed('cruiseControl') && this.scale.scale !== 'MACRO') {
+      this.cruiseControlActive = !this.cruiseControlActive;
+      this.audio.playUiClick();
+      this.bus.emit(Events.Toast, {
+        message: this.cruiseControlActive ? 'Cruise Control: LOCKED' : 'Cruise Control: OFF',
+        kind: this.cruiseControlActive ? 'good' : '',
+      });
+    }
     if (this.scale.scale === 'MACRO') {
+      // Keyboard panning for planetary globe (WASD / Arrows).
+      let panX = 0;
+      let panY = 0;
+      if (this.input.isKeyDown('KeyW') || this.input.isKeyDown('ArrowUp')) panY -= 1;
+      if (this.input.isKeyDown('KeyS') || this.input.isKeyDown('ArrowDown')) panY += 1;
+      if (this.input.isKeyDown('KeyA') || this.input.isKeyDown('ArrowLeft')) panX -= 1;
+      if (this.input.isKeyDown('KeyD') || this.input.isKeyDown('ArrowRight')) panX += 1;
+      if (panX !== 0 || panY !== 0) {
+        this.scale.orbitMacro(panX * 24, panY * 24, dt);
+      }
       const p = this.input.consumePointer();
       if (Math.abs(p.dx) + Math.abs(p.dy) > 0) this.scale.orbitMacro(p.dx, p.dy, 1 / 60);
       const wheel = this.input.consumeWheel();
       if (wheel !== 0) this.scale.zoomMacro(wheel);
-      // Drag-to-orbit without pointer lock.
-      if (this.input.isKeyDown('Mouse0') && !this.input.isPointerLocked) {
-        // handled by pointer consumption above
-      }
     } else {
       this.input.consumePointer();
       this.input.consumeWheel();
     }
+  }
+
+  private toggleHeadlights(): void {
+    this.headlightsOn = !this.headlightsOn;
+    this.audio.playUiClick();
+    if (this.activeVehicle) {
+      if (!this.headlightsLight) {
+        this.headlightsLight = new THREE.SpotLight(0xffeedd, 3.5, 300, Math.PI / 4, 0.4, 1.2);
+        this.headlightsLight.position.set(0, 2, 2);
+        const target = new THREE.Object3D();
+        target.position.set(0, 0, 40);
+        this.activeVehicle.object3D.add(target);
+        this.headlightsLight.target = target;
+        this.activeVehicle.object3D.add(this.headlightsLight);
+      }
+      this.headlightsLight.visible = this.headlightsOn;
+    }
+    this.bus.emit(Events.Toast, {
+      message: this.headlightsOn ? 'Vehicle Searchlight: ON' : 'Vehicle Searchlight: OFF',
+      kind: this.headlightsOn ? 'good' : '',
+    });
   }
 
   private markerStatusMap: Record<string, 'LOCKED' | 'AVAILABLE' | 'ACTIVE' | 'RESOLVED'> = {};
@@ -587,6 +752,7 @@ export class Game {
       this.skyMacro.setSun(this._sunDir);
       this.skyMacro.setEnvironment(0.85, this.planetary.vars.atmosphereToxicity, 1.0);
       this.skyMacro.follow(this.scale.cameras.MACRO);
+      this.starfieldMacro.update(now / 1000, this.scale.cameras.MACRO, 1.0);
       this.globe.setSunDirection(this._sunDir);
       this.globe.setAtmosphereToxicity(this.planetary.vars.atmosphereToxicity);
       if (now - this.lastMacroUiTime >= 66 || this.selectedSpireId !== this.lastScopeSpireId) {
@@ -617,9 +783,11 @@ export class Game {
       this.skyOrbit.setSun(this._sunDir);
       this.skyOrbit.setEnvironment(0.05, 0.05, 1.15);
       this.skyOrbit.follow(this.scale.cameras.ORBIT);
+      this.starfieldOrbit.update(now / 1000, this.scale.cameras.ORBIT, 1.0);
       this.updateVehicleCamera();
       if (this.activeVehicle) {
         this.ui.setVehicleTelemetry(this.activeVehicle.cameraMode, this.activeVehicle.controls);
+        this.updateSectorAssistsAndHud(now);
       }
       return;
     }
@@ -633,9 +801,13 @@ export class Game {
         : 0.8;
       this.skySector.setEnvironment(density, this.planetary.vars.atmosphereToxicity, 0.95);
       this.skySector.follow(this.scale.cameras.SECTOR);
+      const sunElevation = Math.max(0, this._sectorSunDir.y);
+      const sectorStars = Math.max(0, 1.0 - density * 1.2) * (1.0 - sunElevation * 0.7);
+      this.starfieldSector.update(now / 1000, this.scale.cameras.SECTOR, sectorStars);
       this.updateVehicleCamera();
       if (this.activeVehicle) {
         this.ui.setVehicleTelemetry(this.activeVehicle.cameraMode, this.activeVehicle.controls);
+        this.updateSectorAssistsAndHud(now);
       }
       this.applyShake(dt);
       return;
@@ -644,6 +816,9 @@ export class Game {
     // Transitioning: keep both cameras coherent.
     this.scale.updateMacroCamera(dt);
     this.scale.updateSectorCamera(dt);
+    this.starfieldMacro.update(now / 1000, this.scale.cameras.MACRO, 1.0);
+    this.starfieldOrbit.update(now / 1000, this.scale.cameras.ORBIT, 1.0);
+    this.starfieldSector.update(now / 1000, this.scale.cameras.SECTOR, 1.0);
   }
 
   private _sectorSunDir = new THREE.Vector3();
@@ -676,13 +851,71 @@ export class Game {
     cam.position.z += (Math.random() - 0.5) * k;
   }
 
+  private updateSectorAssistsAndHud(now: number): void {
+    const v = this.activeVehicle;
+    if (!v) {
+      this.ui.showGpwsWarning(false);
+      this.ui.updateWaypoint(0, 0, 0, false);
+      return;
+    }
+
+    // Flight Horizon Auto-Leveler Assist:
+    if (this.autoLevelActive) {
+      v.object3D.rotation.z = damp(v.object3D.rotation.z, 0, 4, 1 / 60);
+      v.object3D.rotation.x = damp(v.object3D.rotation.x, 0, 2, 1 / 60);
+    }
+
+    // Vehicle Cruise Control / Throttle Lock:
+    if (this.cruiseControlActive) {
+      if (v.speed < 20) {
+        v.speed = damp(v.speed, 25, 2, 1 / 60);
+      }
+    }
+
+    // Ground Proximity Warning System (GPWS):
+    if (this.sectorField) {
+      const wp = v.worldPosition;
+      const ground = this.sectorField.elevation(wp.x, wp.z);
+      const clearance = wp.y - ground;
+      const isDangerous = clearance < 32 && (v.kind === 'GLIDER' || v.kind === 'ORBITAL_SKIFF');
+      this.ui.showGpwsWarning(isDangerous, Math.max(0, clearance));
+      if (isDangerous && now - this.lastGpwsBeep > 750) {
+        this.lastGpwsBeep = now;
+        this.audio.playWarningBeep();
+      }
+    } else {
+      this.ui.showGpwsWarning(false);
+    }
+
+    // Sector Objective Waypoint & Distance Marker:
+    const rt = this.crises.activeCrisis;
+    if (rt) {
+      const targetPos = this._v1.set(0, (this.sectorField?.surfaceY ?? 0) + 8, 0);
+      const activeCam = this.scale.scale === 'ORBIT' ? this.scale.cameras.ORBIT : this.scale.cameras.SECTOR;
+      const proj = this._v2.copy(targetPos).project(activeCam);
+      const isBehind = proj.z > 1 || proj.z < -1;
+      const dist = v.worldPosition.distanceTo(targetPos);
+      if (!isBehind) {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const screenX = (proj.x * 0.5 + 0.5) * w;
+        const screenY = (-proj.y * 0.5 + 0.5) * h;
+        this.ui.updateWaypoint(screenX, screenY, dist, true);
+      } else {
+        this.ui.updateWaypoint(0, 0, dist, false);
+      }
+    } else {
+      this.ui.updateWaypoint(0, 0, 0, false);
+    }
+  }
+
   // -- globe picking & reticle ---------------------------------------------
 
   private pointerDownPos: { x: number; y: number; t: number } | null = null;
   private hoveredNodeId: string | null = null;
   private hoveredSpireId: number | null = null;
   private hoveredSettlementId: string | null = null;
-  private selectedSpireId = 0;
+  private selectedSpireId = -1;
   private selectedSettlementId: string | null = null;
   private globePointerCleanup: (() => void) | null = null;
   private shortcutKeyCleanup: (() => void) | null = null;
@@ -694,10 +927,91 @@ export class Game {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA')) {
         return;
       }
-      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (this.ui.isCodexOpen) this.ui.closeCodex();
-        else this.ui.openCodex();
+      if (e.code === 'Escape') {
+        if (this.ui.isSettingsOpen) {
+          this.ui.closeSettings();
+          return;
+        }
+        if (this.ui.isBriefingOpen) {
+          this.ui.closeBriefing();
+          return;
+        }
+        if (this.ui.isCodexOpen) {
+          this.ui.closeCodex();
+          return;
+        }
+      }
+      if (e.code === 'F5') {
+        e.preventDefault();
+        void this.saveGame(true);
+        this.audio.playSuccessChime();
+        this.bus.emit(Events.Toast, { message: 'Quick Save created', kind: 'good' });
         return;
+      }
+      if (e.code === 'F9') {
+        e.preventDefault();
+        void this.loadGame();
+        this.audio.playSuccessChime();
+        this.bus.emit(Events.Toast, { message: 'Quick Load restored', kind: 'good' });
+        return;
+      }
+      if (e.code === 'Home') {
+        if (this.scale.scale === 'MACRO') {
+          this.scale.snapMacroCamera('RESET');
+          this.audio.playUiClick();
+          return;
+        }
+      }
+      if (e.code === 'Space' && this.scale.scale === 'MACRO') {
+        e.preventDefault();
+        const next = this.simTimeMultiplier === 0 ? 1 : 0;
+        this.simTimeMultiplier = next;
+        this.ui.setTimeWarp(next);
+        this.bus.emit(Events.Toast, { message: next === 0 ? 'Simulation Paused' : 'Simulation 1x', kind: '' });
+        return;
+      }
+      if (e.code === 'BracketRight' && this.scale.scale === 'MACRO') {
+        const speeds = [0, 1, 2, 5];
+        const curIdx = speeds.indexOf(this.simTimeMultiplier);
+        const next = speeds[Math.min(speeds.length - 1, curIdx + 1)];
+        this.simTimeMultiplier = next;
+        this.ui.setTimeWarp(next);
+        this.bus.emit(Events.Toast, { message: `Simulation Speed: ${next}x`, kind: '' });
+        return;
+      }
+      if (e.code === 'BracketLeft' && this.scale.scale === 'MACRO') {
+        const speeds = [0, 1, 2, 5];
+        const curIdx = speeds.indexOf(this.simTimeMultiplier);
+        const next = speeds[Math.max(0, (curIdx < 0 ? 1 : curIdx) - 1)];
+        this.simTimeMultiplier = next;
+        this.ui.setTimeWarp(next);
+        this.bus.emit(Events.Toast, { message: next === 0 ? 'Simulation Paused' : `Simulation Speed: ${next}x`, kind: '' });
+        return;
+      }
+      if (e.code === 'KeyU' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const muted = this.ui.toggleMute();
+        this.bus.emit(Events.Toast, { message: muted ? 'Audio Muted' : 'Audio Unmuted', kind: '' });
+        return;
+      }
+      if (e.code === 'Backquote' && this.scale.scale === 'MACRO') {
+        const modes: OverlayMode[] = ['TOPOGRAPHY', 'ATMOSPHERE', 'GEOLOGY', 'BIOSPHERE', 'ORBIT', 'LOGISTICS', 'HARMONIC'];
+        const i = modes.indexOf(this.globe.getOverlay());
+        this.ui.setOverlay(modes[(i - 1 + modes.length) % modes.length]);
+        return;
+      }
+      if (e.code === 'Tab' && this.scale.scale === 'MACRO') {
+        e.preventDefault();
+        const modes: OverlayMode[] = ['TOPOGRAPHY', 'ATMOSPHERE', 'GEOLOGY', 'BIOSPHERE', 'ORBIT', 'LOGISTICS', 'HARMONIC'];
+        const i = modes.indexOf(this.globe.getOverlay());
+        this.ui.setOverlay(modes[(i + 1) % modes.length]);
+        return;
+      }
+      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (this.scale.scale === 'MACRO' || this.ui.isCodexOpen) {
+          if (this.ui.isCodexOpen) this.ui.closeCodex();
+          else this.ui.openCodex();
+          return;
+        }
       }
       if (
         this.scale.scale === 'MACRO' &&
@@ -742,11 +1056,19 @@ export class Game {
 
     const onMove = (e: PointerEvent): void => {
       if (this.scale.scale !== 'MACRO') return;
+      if (this.ui.isReticleHovered) return;
       const hit = castAt(e.clientX, e.clientY);
       this.hoveredNodeId = hit.nodeId;
       this.hoveredSpireId = hit.spireId;
       this.hoveredSettlementId = hit.settlementId;
       this.globe.hoveredNode = hit.nodeId;
+
+      // Cursor coordinates, elevation & biome readout HUD.
+      const surfHit = this.globe.pickSurface(ray);
+      if (surfHit) {
+        const biome = latLonBiome(surfHit.lat, surfHit.lon);
+        this.ui.updateCoordinates(surfHit.lat, surfHit.lon, surfHit.elevation ?? 0, BIOME_LABEL[biome]);
+      }
     };
 
     const onUp = (e: PointerEvent): void => {
@@ -765,23 +1087,50 @@ export class Game {
       }
     };
 
+    const onDblClick = (e: MouseEvent): void => {
+      if (this.scale.scale !== 'MACRO') return;
+      const hit = castAt(e.clientX, e.clientY);
+      if (hit.nodeId) {
+        const rt = this.crises.get(hit.nodeId as CrisisId);
+        if (rt) this.scale.focusNode(rt.def.lat, rt.def.lon, 140);
+      } else if (hit.spireId !== null) {
+        const def = ACOUSTIC_SPIRES[hit.spireId];
+        if (def) this.scale.focusNode(def.lat, def.lon, 140);
+      } else if (hit.settlementId) {
+        const st = this.settlements.find((s) => s.id === hit.settlementId);
+        if (st) this.scale.focusNode(st.lat, st.lon, 140);
+      } else {
+        const surfHit = this.globe.pickSurface(ray);
+        if (surfHit) this.scale.focusNode(surfHit.lat, surfHit.lon, 140);
+      }
+      this.audio.playUiClick();
+    };
+
     canvas.addEventListener('pointerdown', onDown);
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerup', onUp);
+    canvas.addEventListener('dblclick', onDblClick);
     this.globePointerCleanup = () => {
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
+      canvas.removeEventListener('dblclick', onDblClick);
     };
   }
 
   /** Focus the Command Lattice camera and reticle on a survivor settlement. */
   selectSettlement(settlementId: string): void {
+    if (this.selectedSettlementId === settlementId) {
+      this.selectedSettlementId = null;
+      this.ui.selectSettlement(null);
+      return;
+    }
     const st = this.settlements.find((s) => s.id === settlementId);
     const def = SETTLEMENTS.find((s) => s.id === settlementId);
     if (!st || !def) return;
     this.selectedSettlementId = settlementId;
     this.selectedNodeId = null;
+    this.selectedSpireId = -1;
     this.ui.setSelectedNode(null);
     this.ui.selectSettlement(settlementId);
     this.scale.focusNode(st.lat, st.lon, 100);
@@ -798,6 +1147,10 @@ export class Game {
     const def = ACOUSTIC_SPIRES[spireId];
     if (!sp || !def) return;
     this.selectedSpireId = spireId;
+    this.selectedNodeId = null;
+    this.selectedSettlementId = null;
+    this.ui.setSelectedNode(null);
+    this.ui.selectSettlement(null);
     this.ui.selectSpire(spireId);
     this.scale.focusNode(def.lat, def.lon, 100);
     this.audio.uiTone(def.baseFreq * 4, 0.16);
@@ -838,7 +1191,7 @@ export class Game {
         return;
       }
     }
-    const spireId = this.hoveredSpireId;
+    const spireId = this.hoveredSpireId ?? (this.selectedSpireId >= 0 ? this.selectedSpireId : null);
     if (spireId !== null) {
       const sp = this.spires[spireId];
       const def = ACOUSTIC_SPIRES[spireId];
@@ -892,6 +1245,7 @@ export class Game {
     if (!rt) return;
     this.selectedNodeId = id;
     this.selectedSettlementId = null;
+    this.selectedSpireId = -1;
     this.ui.setSelectedNode(id);
     this.ui.selectSettlement(null);
     this.scale.focusNode(rt.def.lat, rt.def.lon, 100);
@@ -1027,6 +1381,7 @@ export class Game {
       if (spireIds.length === 0) spireIds.push(0);
       this.sectorEnv.buildSpires(spireIds, this.spires.map((x) => x.functional));
       this.sectorEnv.setSunDirection(this._sectorSunDir);
+      this.scale.scenes.SECTOR.add(this.skySector.mesh, this.starfieldSector.points);
     }
 
     // Vehicle.
@@ -1302,6 +1657,7 @@ export class Game {
       this.sectorEnv.dispose();
       this.sectorEnv = null;
     }
+    this.scale.scenes.SECTOR.remove(this.skySector.mesh, this.starfieldSector.points);
     if (this.activeCrisisId && this.sectorLattice) {
       this.crises.tunnelData.set(this.activeCrisisId, this.sectorLattice.serialize());
     }
@@ -1336,13 +1692,45 @@ export class Game {
     this.ui.setOverlay(mode);
   }
 
+  abandonCrisis(id?: string): void {
+    const targetId = (id ?? this.activeCrisisId) as CrisisId | null;
+    const rt = targetId ? this.crises.get(targetId) : this.crises.activeCrisis;
+    const name = rt?.def.name ?? 'Crisis';
+    if (rt && rt.status === 'ACTIVE') {
+      rt.status = 'AVAILABLE';
+    }
+    this.crises.abandon();
+    this.ui.closeBriefing();
+    if (this.scale.scale === 'SECTOR' || this.scale.scale === 'ORBIT') {
+      this.ascend();
+    }
+    this.crises.refreshAvailability(this.functionalSpireCount());
+    this.ui.setCrises(this.crises.all(), null);
+    this.bus.emit(Events.Toast, { message: `Operation ${name} aborted`, kind: '' });
+    this.logEvent(`Aborted operation ${name}`);
+    void this.saveGame(false);
+  }
+
   cycleCamera(): void {
     const v = this.activeVehicle;
-    if (!v) return;
+    if (this.scale.scale === 'MACRO' || !v) {
+      const presets = [170, 290, 520];
+      const labels = ['Tactical (170 km)', 'Standard Orbit (290 km)', 'Planetary (520 km)'];
+      const cur = this.scale.macroOrbit.targetDistance;
+      let nextIdx = 0;
+      if (cur < 220) nextIdx = 1;
+      else if (cur < 380) nextIdx = 2;
+      else nextIdx = 0;
+      this.scale.macroOrbit.targetDistance = presets[nextIdx];
+      this.audio.uiTone(440 + nextIdx * 110, 0.08);
+      this.bus.emit(Events.Toast, { message: `Camera: ${labels[nextIdx]}`, kind: '' });
+      return;
+    }
     const modes = v.availableCameraModes;
     const i = modes.indexOf(v.cameraMode);
     v.cameraMode = modes[(i + 1) % modes.length];
     this.audio.uiTone(v.cameraMode === 'COCKPIT' ? 720 : 480, 0.06);
+    this.bus.emit(Events.Toast, { message: `Camera: ${v.cameraMode}`, kind: '' });
   }
 
   // -- settings -------------------------------------------------------------
@@ -1623,6 +2011,9 @@ export class Game {
     this.skyMacro.dispose();
     this.skyOrbit.dispose();
     this.skySector.dispose();
+    this.starfieldMacro.dispose();
+    this.starfieldOrbit.dispose();
+    this.starfieldSector.dispose();
     this.orbitalLayer.dispose();
     this.scale.dispose();
     this.world.dispose();

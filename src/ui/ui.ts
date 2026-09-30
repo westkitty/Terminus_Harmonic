@@ -38,6 +38,7 @@ import {
   MATERIALS,
   type BiomeId,
   type CrisisNodeDef,
+  type Domain,
 } from '../state/world';
 import { VEHICLE_SPECS, domainBadgeSvg, vehicleBlueprintSvg } from './schematics';
 import type { CrisisRuntime } from '../game/crisis';
@@ -79,6 +80,13 @@ export interface UIDependencies {
   onCycleCamera: () => void;
   onPingSpire?: (spireId: number) => void;
   onSelectSettlement?: (settlementId: string) => void;
+  onAbandonCrisis?: (id: string) => void;
+  onTimeWarpChange?: (multiplier: number) => void;
+  onToggleMute?: () => boolean;
+  onSnapCamera?: (angle: 'EQUATOR' | 'NORTH_POLE' | 'SOUTH_POLE' | 'RESET') => void;
+  onCopySave?: () => Promise<void>;
+  onPasteSave?: (text: string) => void;
+  onSoundTrigger?: (sound: 'click' | 'hover' | 'modalOpen' | 'modalClose' | 'warning' | 'success') => void;
 }
 
 type Listener = () => void;
@@ -118,6 +126,22 @@ export class UIController {
     log: { t: number; text: string }[];
   } = { domainPoints: {}, unlockedModules: [], log: [] };
   private rebindingAction: ActionName | null = null;
+  private timeWarpMultiplier = 1;
+  private isAudioMuted = false;
+  private crisisFilterDomain: Domain | 'ALL' = 'ALL';
+  private crisisSearchText = '';
+  private codexSearchText = '';
+  private readCodexModules = new Set<string>();
+  private tooltipEl: HTMLElement | null = null;
+  private lastCrisesList: CrisisRuntime[] = [];
+
+  get currentTimeWarp(): number {
+    return this.timeWarpMultiplier;
+  }
+
+  get audioMuted(): boolean {
+    return this.isAudioMuted;
+  }
 
   /** Update the planetary state reference when a new world or save is loaded. */
   setPlanetary(planetary: PlanetaryState): void {
@@ -132,6 +156,13 @@ export class UIController {
   /** Action awaiting a key press, or null. */
   get pendingRebind(): ActionName | null {
     return this.rebindingAction;
+  }
+
+  private cancelRebinding: (() => void) | null = null;
+  private reticleHovered = false;
+
+  get isReticleHovered(): boolean {
+    return this.reticleHovered;
   }
 
   // Cached element refs.
@@ -172,6 +203,11 @@ export class UIController {
     const macro = document.createElement('div');
     macro.id = 'macro-ui';
     macro.innerHTML = `
+      <div id="coord-bar">
+        <span>SURVEY: <b id="coord-latlon">--° N · --° E</b></span>
+        <span>ELEV: <b id="coord-elev">-- m</b></span>
+        <span class="coord-biome" id="coord-biome">--</span>
+      </div>
       <div class="macro-row">
         <div class="macro-block panel" id="planetary-health">
           <div class="panel-title"><span>Planetary State</span><span id="health-pct">--</span></div>
@@ -180,6 +216,12 @@ export class UIController {
             <div class="health-meta">
               <span id="instability">instability --</span>
               <span id="sim-time">t+0</span>
+              <div id="time-warp-bar" title="Simulation Speed [Space: Pause, [ / ]: Speed]">
+                <button class="time-warp-btn" data-speed="0" type="button" title="Pause simulation [Space]">||</button>
+                <button class="time-warp-btn active" data-speed="1" type="button" title="1x Real-time speed">1x</button>
+                <button class="time-warp-btn" data-speed="2" type="button" title="2x Speed [ ] ]">2x</button>
+                <button class="time-warp-btn" data-speed="5" type="button" title="5x Warp speed [ ] ]">5x</button>
+              </div>
             </div>
             <div class="var-grid" id="var-grid"></div>
             <div class="var-inspector" id="var-inspector" aria-live="polite"></div>
@@ -219,6 +261,15 @@ export class UIController {
           </div>
           <div class="panel" id="crisis-list" style="margin-top:8px">
             <div class="panel-title"><span>Crisis Nodes</span><span id="crisis-count"></span></div>
+            <div class="crisis-filter-bar" id="crisis-filters">
+              <button class="crisis-filter-pill active" data-domain="ALL" type="button">All</button>
+              <button class="crisis-filter-pill" data-domain="ATMOSPHERE" type="button">Air</button>
+              <button class="crisis-filter-pill" data-domain="CRYOSPHERE" type="button">Ice</button>
+              <button class="crisis-filter-pill" data-domain="CRUST" type="button">Crust</button>
+              <button class="crisis-filter-pill" data-domain="BIOSPHERE" type="button">Bio</button>
+              <button class="crisis-filter-pill" data-domain="HARMONIC" type="button">Harmonic</button>
+            </div>
+            <input type="text" class="search-input" id="crisis-search" placeholder="Filter crises…" aria-label="Filter crises" />
             <div id="crisis-items"></div>
             <div id="settlement-ledger">
               <div class="ledger-head"><span>Settlement Viability</span><span id="ledger-avg">--</span></div>
@@ -269,6 +320,13 @@ export class UIController {
     this.el.reticleTag = macro.querySelector('#reticle-tag') as HTMLElement;
     this.el.reticleSub = macro.querySelector('#reticle-sub') as HTMLElement;
     this.el.reticleAction = macro.querySelector('#reticle-action') as HTMLButtonElement;
+
+    this.el.globeReticle.addEventListener('pointerenter', () => {
+      this.reticleHovered = true;
+    });
+    this.el.globeReticle.addEventListener('pointerleave', () => {
+      this.reticleHovered = false;
+    });
 
     // Overlay buttons.
     OVERLAY_MODES.forEach((mode, idx) => {
@@ -323,6 +381,7 @@ export class UIController {
           <div id="sector-bar">
             <span class="sector-cam-badge" id="hud-cam-mode">CAM · CHASE</span>
             <button class="btn" id="hud-cam-btn" type="button" title="Cycle Camera [V]">Camera [V]</button>
+            <button class="btn" id="hud-mute-btn" type="button" title="Mute/Unmute Audio [U]">Audio</button>
             <button class="btn" id="hud-codex-btn" type="button" title="Open Survey Archive &amp; Codex [C]">Archive [C]</button>
             <button class="btn" id="hud-ascend-btn" type="button" title="Return to Command Lattice [ESC]">Lattice [ESC]</button>
             <button class="btn" id="hud-settings-btn" type="button" title="Open Configuration">Config</button>
@@ -332,6 +391,11 @@ export class UIController {
           <div class="panel-title"><span>Engineering Tasks</span><span id="obj-count"></span></div>
           <div class="body" id="obj-body"></div>
         </div>
+      </div>
+      <div id="gpws-alert">⚠ TERRAIN PULL UP ⚠</div>
+      <div id="sector-waypoint">
+        <div class="wp-icon">◆</div>
+        <div class="wp-dist" id="wp-dist-lbl">-- m</div>
       </div>
       <div class="hud-bottom">
         <div>
@@ -355,10 +419,14 @@ export class UIController {
     this.el.objCount = hud.querySelector('#obj-count') as HTMLElement;
     this.el.hudCamMode = hud.querySelector('#hud-cam-mode') as HTMLElement;
     this.el.hudCamBtn = hud.querySelector('#hud-cam-btn') as HTMLButtonElement;
+    this.el.hudMuteBtn = hud.querySelector('#hud-mute-btn') as HTMLButtonElement;
     this.el.hudCodexBtn = hud.querySelector('#hud-codex-btn') as HTMLButtonElement;
     this.el.hudAscendBtn = hud.querySelector('#hud-ascend-btn') as HTMLButtonElement;
     this.el.hudSettingsBtn = hud.querySelector('#hud-settings-btn') as HTMLButtonElement;
     this.el.hudControls = hud.querySelector('#hud-controls') as HTMLElement;
+    this.el.gpwsAlert = hud.querySelector('#gpws-alert') as HTMLElement;
+    this.el.sectorWaypoint = hud.querySelector('#sector-waypoint') as HTMLElement;
+    this.el.wpDistLbl = hud.querySelector('#wp-dist-lbl') as HTMLElement;
 
     // --- briefing modal ---
     const brief = document.createElement('div');
@@ -406,6 +474,24 @@ export class UIController {
     this.el.briefAbort = brief.querySelector('#briefing-abort') as HTMLButtonElement;
     this.el.briefClose = brief.querySelector('#briefing-close') as HTMLButtonElement;
 
+    // --- abandon confirmation popover ---
+    const abandonConfirm = document.createElement('div');
+    abandonConfirm.id = 'abandon-confirm';
+    abandonConfirm.innerHTML = `
+      <div class="abandon-card">
+        <h3>Confirm Abort</h3>
+        <p>Abort current descent and return to the Command Lattice? Unfinished repairs will be lost.</p>
+        <div class="abandon-actions">
+          <button class="btn" id="abandon-cancel-btn" type="button">Stay in Sector</button>
+          <button class="btn primary" id="abandon-ok-btn" type="button">Confirm Abandon</button>
+        </div>
+      </div>
+    `;
+    root.appendChild(abandonConfirm);
+    this.el.abandonConfirm = abandonConfirm;
+    this.el.abandonCancelBtn = abandonConfirm.querySelector('#abandon-cancel-btn') as HTMLButtonElement;
+    this.el.abandonOkBtn = abandonConfirm.querySelector('#abandon-ok-btn') as HTMLButtonElement;
+
     // --- survey archive & engineering codex modal ---
     const codex = document.createElement('div');
     codex.id = 'codex';
@@ -419,8 +505,14 @@ export class UIController {
             <h2 id="codex-title">Survey Archive &amp; Engineering Codex</h2>
             <div class="domain">0-ARK Field Manual · Provenance &amp; Subsystem Registry</div>
           </div>
-          <button class="btn" id="codex-close" type="button">Close</button>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn" id="codex-mark-read" type="button" style="font-size:0.68rem">Mark All Read</button>
+            <button class="btn" id="codex-close" type="button">Close</button>
+          </div>
         </header>
+        <div style="padding: 0 16px 6px 16px">
+          <input type="text" class="search-input" id="codex-search" placeholder="Search archive lore, blueprints, materials, or log…" aria-label="Search Codex" />
+        </div>
         <div class="codex-tabs" id="codex-tabs" role="tablist">
           <button class="codex-tab" role="tab" data-tab="DOMAINS" aria-selected="true" type="button">Domains &amp; Modules</button>
           <button class="codex-tab" role="tab" data-tab="BLUEPRINTS" aria-selected="false" type="button">Blueprints &amp; Biomes</button>
@@ -435,6 +527,8 @@ export class UIController {
     this.el.codexTabs = codex.querySelector('#codex-tabs') as HTMLElement;
     this.el.codexBody = codex.querySelector('#codex-body') as HTMLElement;
     this.el.codexClose = codex.querySelector('#codex-close') as HTMLButtonElement;
+    this.el.codexSearch = codex.querySelector('#codex-search') as HTMLInputElement;
+    this.el.codexMarkRead = codex.querySelector('#codex-mark-read') as HTMLButtonElement;
 
     // --- settings modal ---
     const settings = document.createElement('div');
@@ -449,10 +543,12 @@ export class UIController {
         </header>
         <div class="settings-body" id="settings-body"></div>
         <footer>
-          <button class="btn" id="settings-export">Export Save</button>
-          <button class="btn" id="settings-import">Import Save</button>
-          <button class="btn" id="settings-save">Save Now</button>
-          <button class="btn" id="settings-load">Load</button>
+          <button class="btn" id="settings-copy-save" type="button" title="Copy full campaign save code to clipboard">Copy Save</button>
+          <button class="btn" id="settings-paste-save" type="button" title="Load campaign save code from clipboard">Paste Save</button>
+          <button class="btn" id="settings-export">Export</button>
+          <button class="btn" id="settings-import">Import</button>
+          <button class="btn" id="settings-save">Save Now [F5]</button>
+          <button class="btn" id="settings-load">Load [F9]</button>
           <button class="btn" id="settings-newworld">New World</button>
         </footer>
       </div>
@@ -493,6 +589,8 @@ export class UIController {
     // --- toasts ---
     const toasts = document.createElement('div');
     toasts.id = 'toasts';
+    toasts.setAttribute('role', 'status');
+    toasts.setAttribute('aria-live', 'polite');
     root.appendChild(toasts);
     this.el.toasts = toasts;
 
@@ -502,6 +600,12 @@ export class UIController {
     banner.textContent = 'Terminus Harmonic · dormant';
     root.appendChild(banner);
     this.el.harmonicBanner = banner;
+
+    // --- universal tooltip ---
+    const tooltip = document.createElement('div');
+    tooltip.id = 'ui-tooltip';
+    root.appendChild(tooltip);
+    this.tooltipEl = tooltip;
 
     this.buildSettings();
     this.selectPlanetaryVar(this.selectedPlanetaryVar);
@@ -538,6 +642,21 @@ export class UIController {
     gDisplay.appendChild(
       this.row('Performance overlay', this.checkbox(this.settings.showPerf, (v) => this.deps.onSettingsChange({ showPerf: v }))),
     );
+    const intervals = [
+      { v: '0', l: 'Disabled' },
+      { v: '1', l: 'Every 1 minute' },
+      { v: '3', l: 'Every 3 minutes' },
+      { v: '5', l: 'Every 5 minutes' },
+      { v: '10', l: 'Every 10 minutes' },
+    ];
+    gDisplay.appendChild(
+      this.row(
+        'Auto-save interval',
+        this.select(intervals, String(this.settings.autoSaveIntervalMinutes ?? 5), (v) =>
+          this.deps.onSettingsChange({ autoSaveIntervalMinutes: Number(v) }),
+        ),
+      ),
+    );
 
     // --- audio ---
     const gAudio = group('Audio');
@@ -550,44 +669,25 @@ export class UIController {
       s.addEventListener('input', () => cb(Number(s.value) / 100));
       return s;
     };
-    gAudio.appendChild(
-      this.row(
-        'Master volume',
-        (() => {
-          const wrap = document.createElement('div');
-          wrap.style.display = 'flex';
-          wrap.style.alignItems = 'center';
-          wrap.style.gap = '8px';
-          const val = document.createElement('span');
-          val.className = 'value';
-          val.textContent = `${Math.round(this.settings.masterVolume * 100)}%`;
-          const s = slider(this.settings.masterVolume, (n) => {
-            val.textContent = `${Math.round(n * 100)}%`;
-            this.deps.onSettingsChange({ masterVolume: n });
-          });
-          wrap.append(s, val);
-          return wrap;
-        })(),
-      ),
-    );
-    gAudio.appendChild(
-      this.row(
-        'Machinery / impact',
-        slider(this.settings.sfxVolume, (n) => this.deps.onSettingsChange({ sfxVolume: n })),
-      ),
-    );
-    gAudio.appendChild(
-      this.row(
-        'Ambient / atmosphere',
-        slider(this.settings.ambientVolume, (n) => this.deps.onSettingsChange({ ambientVolume: n })),
-      ),
-    );
-    gAudio.appendChild(
-      this.row(
-        'Terminus Harmonic',
-        slider(this.settings.musicVolume, (n) => this.deps.onSettingsChange({ musicVolume: n })),
-      ),
-    );
+    const volumeRow = (label: string, initial: number, onChange: (n: number) => void): HTMLElement => {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '8px';
+      const val = document.createElement('span');
+      val.className = 'value';
+      val.textContent = `${Math.round(initial * 100)}%`;
+      const s = slider(initial, (n) => {
+        val.textContent = `${Math.round(n * 100)}%`;
+        onChange(n);
+      });
+      wrap.append(s, val);
+      return this.row(label, wrap);
+    };
+    gAudio.appendChild(volumeRow('Master volume', this.settings.masterVolume, (n) => this.deps.onSettingsChange({ masterVolume: n })));
+    gAudio.appendChild(volumeRow('Machinery / impact', this.settings.sfxVolume, (n) => this.deps.onSettingsChange({ sfxVolume: n })));
+    gAudio.appendChild(volumeRow('Ambient / atmosphere', this.settings.ambientVolume, (n) => this.deps.onSettingsChange({ ambientVolume: n })));
+    gAudio.appendChild(volumeRow('Terminus Harmonic', this.settings.musicVolume, (n) => this.deps.onSettingsChange({ musicVolume: n })));
 
     // --- accessibility ---
     const gA11y = group('Accessibility');
@@ -596,6 +696,15 @@ export class UIController {
     );
     gA11y.appendChild(
       this.row('High contrast', this.checkbox(this.settings.highContrast, (v) => this.deps.onSettingsChange({ highContrast: v }))),
+    );
+    gA11y.appendChild(
+      this.row(
+        'Colorblind mode',
+        this.checkbox(this.settings.colorblindMode ?? false, (v) => {
+          this.deps.onSettingsChange({ colorblindMode: v });
+          document.body.classList.toggle('colorblind-mode', v);
+        }),
+      ),
     );
     gA11y.appendChild(
       this.row('Larger text', this.checkbox(this.settings.largeText, (v) => this.deps.onSettingsChange({ largeText: v }))),
@@ -633,17 +742,25 @@ export class UIController {
       const btn = document.createElement('button');
       btn.textContent = 'Rebind';
       btn.addEventListener('click', () => {
+        this.cancelRebinding?.();
         this.rebindingAction = action;
-        btn.textContent = 'Press a key…';
+        btn.textContent = 'Press a key (Esc to cancel)…';
+        const cleanup = (): void => {
+          window.removeEventListener('keydown', onKey, true);
+          btn.textContent = 'Rebind';
+          this.rebindingAction = null;
+          this.cancelRebinding = null;
+        };
         const onKey = (e: KeyboardEvent): void => {
           e.preventDefault();
+          e.stopPropagation();
+          cleanup();
+          if (e.code === 'Escape') return;
           this.deps.onRebind(action, e.code);
           this.settings = { ...this.settings, bindings: { ...this.settings.bindings, [action]: [e.code] } };
           renderKeys();
-          btn.textContent = 'Rebind';
-          window.removeEventListener('keydown', onKey, true);
-          this.rebindingAction = null;
         };
+        this.cancelRebinding = cleanup;
         window.addEventListener('keydown', onKey, true);
       });
       row.append(lbl, keys, btn);
@@ -706,28 +823,76 @@ export class UIController {
   // -- wiring ---------------------------------------------------------------
 
   private wire(): void {
-    this.el.bootEnter.addEventListener('click', () => this.dismissBoot());
-    this.el.briefClose.addEventListener('click', () => this.closeBriefing());
+    this.el.bootEnter.addEventListener('click', () => {
+      this.deps.onSoundTrigger?.('click');
+      this.dismissBoot();
+    });
+    this.el.briefClose.addEventListener('click', () => {
+      this.deps.onSoundTrigger?.('modalClose');
+      this.closeBriefing();
+    });
     this.el.briefDescend.addEventListener('click', () => {
+      this.deps.onSoundTrigger?.('click');
       if (this.briefingNodeId) this.deps.onStartCrisis(this.briefingNodeId);
     });
     this.el.briefAbort.addEventListener('click', () => {
-      this.closeBriefing();
-      this.deps.onAscend();
+      this.el.abandonConfirm.classList.add('open');
+      this.deps.onSoundTrigger?.('warning');
     });
-    this.el.settingsClose.addEventListener('click', () => this.closeSettings());
+    this.el.abandonCancelBtn?.addEventListener('click', () => {
+      this.el.abandonConfirm.classList.remove('open');
+      this.deps.onSoundTrigger?.('click');
+    });
+    this.el.abandonOkBtn?.addEventListener('click', () => {
+      this.el.abandonConfirm.classList.remove('open');
+      const id = this.briefingNodeId;
+      this.closeBriefing();
+      if (id) this.deps.onAbandonCrisis?.(id);
+      else this.deps.onAscend();
+      this.deps.onSoundTrigger?.('click');
+    });
+    this.el.settingsClose.addEventListener('click', () => {
+      this.deps.onSoundTrigger?.('modalClose');
+      this.closeSettings();
+    });
 
     const backdrop = (e: MouseEvent): void => {
-      if (e.target === this.el.briefing) this.closeBriefing();
-      if (e.target === this.el.settings) this.closeSettings();
-      if (e.target === this.el.codex) this.closeCodex();
+      if (e.target === this.el.briefing) {
+        this.deps.onSoundTrigger?.('modalClose');
+        this.closeBriefing();
+      }
+      if (e.target === this.el.settings) {
+        this.deps.onSoundTrigger?.('modalClose');
+        this.closeSettings();
+      }
+      if (e.target === this.el.codex) {
+        this.deps.onSoundTrigger?.('modalClose');
+        this.closeCodex();
+      }
+      if (e.target === this.el.abandonConfirm) {
+        this.el.abandonConfirm.classList.remove('open');
+      }
     };
     this.el.briefing.addEventListener('click', backdrop);
     this.el.settings.addEventListener('click', backdrop);
     this.el.codex.addEventListener('click', backdrop);
-    this.el.codexClose.addEventListener('click', () => this.closeCodex());
+    this.el.abandonConfirm.addEventListener('click', backdrop);
+    this.el.codexClose.addEventListener('click', () => {
+      this.deps.onSoundTrigger?.('modalClose');
+      this.closeCodex();
+    });
+    this.el.codexSearch?.addEventListener('input', () => {
+      this.codexSearchText = ((this.el.codexSearch as HTMLInputElement).value || '').toLowerCase().trim();
+      this.renderCodex();
+    });
+    this.el.codexMarkRead?.addEventListener('click', () => {
+      this.deps.onSoundTrigger?.('click');
+      this.markAllCodexRead();
+    });
+
     for (const tabBtn of this.el.codexTabs.querySelectorAll<HTMLButtonElement>('.codex-tab')) {
       tabBtn.addEventListener('click', () => {
+        this.deps.onSoundTrigger?.('click');
         const tab = (tabBtn.dataset.tab as CodexTab) ?? 'DOMAINS';
         this.openCodex(tab);
       });
@@ -736,9 +901,10 @@ export class UIController {
     const d = this.deps;
     this.disposers.push(d.bus.on(Events.Toast, (p) => this.toast(p?.message as string, p?.kind as string)));
     this.disposers.push(
-      d.bus.on(Events.CrisisResolved, (p) =>
-        this.toast(`${p?.name as string} stabilised`, 'good'),
-      ),
+      d.bus.on(Events.CrisisResolved, (p) => {
+        this.deps.onSoundTrigger?.('success');
+        this.toast(`${p?.name as string} stabilised`, 'good');
+      }),
     );
     this.disposers.push(
       d.bus.on(Events.CrisisProgress, (p) => {
@@ -755,19 +921,61 @@ export class UIController {
       b.className = `btn${primary ? ' primary' : ''}`;
       if (id) b.id = id;
       b.textContent = label;
-      b.addEventListener('click', fn);
+      b.addEventListener('click', () => {
+        d.onSoundTrigger?.('click');
+        fn();
+      });
       return b;
     };
     this.el.macroToolbar.append(
       mk('Archive [C]', () => this.openCodex(), false, 'macro-codex-btn'),
+      mk('Audio [U]', () => this.toggleMute(), false, 'macro-mute-btn'),
+      mk('Equator', () => d.onSnapCamera?.('EQUATOR')),
+      mk('N-Pole', () => d.onSnapCamera?.('NORTH_POLE')),
+      mk('S-Pole', () => d.onSnapCamera?.('SOUTH_POLE')),
+      mk('Reset [Home]', () => d.onSnapCamera?.('RESET')),
       mk('Settings', () => this.openSettings()),
       mk('Camera', () => d.onCycleCamera()),
       mk('Save', () => d.onSave()),
       mk('Load', () => d.onLoad()),
     );
 
+    // Simulation time warp buttons.
+    const warpButtons = this.el.macro.querySelectorAll<HTMLButtonElement>('.time-warp-btn');
+    for (const wb of warpButtons) {
+      wb.addEventListener('click', () => {
+        const sp = Number(wb.dataset.speed ?? 1);
+        this.setTimeWarp(sp);
+        d.onTimeWarpChange?.(sp);
+        d.onSoundTrigger?.('click');
+      });
+    }
+
+    // Crisis filter pills and live search.
+    const filterButtons = this.el.macro.querySelectorAll<HTMLButtonElement>('.crisis-filter-pill');
+    for (const fb of filterButtons) {
+      fb.addEventListener('click', () => {
+        for (const other of filterButtons) other.classList.remove('active');
+        fb.classList.add('active');
+        this.crisisFilterDomain = (fb.dataset.domain as Domain | 'ALL') ?? 'ALL';
+        this.filterCrisisList();
+        d.onSoundTrigger?.('click');
+      });
+    }
+    const crisisSearchInput = this.el.macro.querySelector('#crisis-search') as HTMLInputElement | null;
+    crisisSearchInput?.addEventListener('input', () => {
+      this.crisisSearchText = (crisisSearchInput.value || '').toLowerCase().trim();
+      this.filterCrisisList();
+    });
+
     // Sector HUD command bar + spire ping wiring.
-    this.el.hudCamBtn?.addEventListener('click', () => d.onCycleCamera());
+    this.el.hudCamBtn?.addEventListener('click', () => {
+      d.onSoundTrigger?.('click');
+      d.onCycleCamera();
+    });
+    this.el.hudMuteBtn?.addEventListener('click', () => {
+      this.toggleMute();
+    });
     this.el.hudCodexBtn?.addEventListener('click', () => this.openCodex());
     this.el.hudAscendBtn?.addEventListener('click', () => d.onAscend());
     this.el.hudSettingsBtn?.addEventListener('click', () => this.openSettings());
@@ -775,6 +983,7 @@ export class UIController {
       d.onPingSpire?.(this.selectedSpireId);
     });
     this.el.reticleAction?.addEventListener('click', () => {
+      d.onSoundTrigger?.('click');
       const nodeId = this.el.reticleAction.dataset.nodeId;
       const spireId = this.el.reticleAction.dataset.spireId;
       const settlementId = this.el.reticleAction.dataset.settlementId;
@@ -785,30 +994,57 @@ export class UIController {
 
     const close = this.el.settings.querySelector('#settings-close') as HTMLButtonElement;
     close.addEventListener('click', () => this.closeSettings());
+    const cp = this.el.settings.querySelector('#settings-copy-save') as HTMLButtonElement | null;
+    cp?.addEventListener('click', async () => {
+      d.onSoundTrigger?.('click');
+      if (d.onCopySave) await d.onCopySave();
+    });
+    const pst = this.el.settings.querySelector('#settings-paste-save') as HTMLButtonElement | null;
+    pst?.addEventListener('click', () => {
+      d.onSoundTrigger?.('click');
+      let text: string | null = null;
+      if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+        text = window.prompt('Paste campaign save JSON:');
+      }
+      if (text && d.onPasteSave) d.onPasteSave(text);
+    });
     const exp = this.el.settings.querySelector('#settings-export') as HTMLButtonElement;
     exp.addEventListener('click', () => d.onExport());
     const imp = this.el.settings.querySelector('#settings-import') as HTMLButtonElement;
-    imp.addEventListener('click', () => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'application/json,.json';
-      input.addEventListener('change', () => {
-        const f = input.files?.[0];
-        if (!f) return;
-        const r = new FileReader();
-        r.onload = () => d.onImport(String(r.result));
-        r.readAsText(f);
-      });
-      input.click();
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'application/json,.json';
+    fileInput.style.display = 'none';
+    this.el.settings.appendChild(fileInput);
+    fileInput.addEventListener('change', () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        d.onImport(String(r.result));
+        this.buildSettings();
+      };
+      r.readAsText(f);
+      fileInput.value = '';
     });
+    imp.addEventListener('click', () => fileInput.click());
     const sv = this.el.settings.querySelector('#settings-save') as HTMLButtonElement;
     sv.addEventListener('click', () => d.onSave());
     const ld = this.el.settings.querySelector('#settings-load') as HTMLButtonElement;
-    ld.addEventListener('click', () => d.onLoad());
+    ld.addEventListener('click', () => {
+      d.onLoad();
+      this.buildSettings();
+    });
     const nw = this.el.settings.querySelector('#settings-newworld') as HTMLButtonElement;
     nw.addEventListener('click', () => {
-      if (confirm('Discard the current campaign and generate a new world?')) d.onNewWorld();
+      if (confirm('Discard the current campaign and generate a new world?')) {
+        d.onNewWorld();
+        this.closeSettings();
+      }
     });
+
+    // Universal Tooltip registration.
+    this.initTooltips();
 
     // Touch wiring.
     this.wireTouch();
@@ -890,10 +1126,21 @@ export class UIController {
   /** Register the callback for the boot screen's "Establish Link" button. */
   onEnter(fn: () => void): void {
     this.enterHandler = fn;
-    this.el.bootEnter.addEventListener('click', () => this.enterHandler?.());
+    this.el.bootEnter.addEventListener('click', () => {
+      this.cleanupBootKey();
+      this.enterHandler?.();
+    });
   }
 
   private enterHandler: (() => void) | null = null;
+  private bootKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+  private cleanupBootKey(): void {
+    if (this.bootKeyHandler) {
+      window.removeEventListener('keydown', this.bootKeyHandler);
+      this.bootKeyHandler = null;
+    }
+  }
 
   startBootSequence(lines: string[]): void {
     this.el.bootLines.innerHTML = '';
@@ -903,9 +1150,20 @@ export class UIController {
       s.style.animationDelay = `${i * 0.55}s`;
       this.el.bootLines.appendChild(s);
     });
+    this.el.bootEnter.focus();
+    this.cleanupBootKey();
+    this.bootKeyHandler = (e: KeyboardEvent): void => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        this.cleanupBootKey();
+        this.dismissBoot();
+        this.enterHandler?.();
+      }
+    };
+    window.addEventListener('keydown', this.bootKeyHandler);
   }
 
   dismissBoot(): void {
+    this.cleanupBootKey();
     this.el.boot.classList.add('done');
     setTimeout(() => {
       this.el.boot.style.display = 'none';
@@ -1062,6 +1320,7 @@ export class UIController {
 
   /** Rebuild the crisis list from runtimes. */
   setCrises(runtimes: CrisisRuntime[], selected: string | null): void {
+    this.lastCrisesList = runtimes;
     let resolved = 0;
     const live = new Set<string>();
     for (const rt of runtimes) {
@@ -1078,6 +1337,21 @@ export class UIController {
     }
     const count = `${resolved}/${runtimes.length}`;
     if (this.el.crisisCount.textContent !== count) this.el.crisisCount.textContent = count;
+    this.filterCrisisList();
+  }
+
+  filterCrisisList(): void {
+    for (const [id, row] of this.crisisRows) {
+      const rt = this.lastCrisesList.find((c) => c.def.id === id);
+      if (!rt) continue;
+      const matchesDomain = this.crisisFilterDomain === 'ALL' || rt.def.domain === this.crisisFilterDomain;
+      const search = this.crisisSearchText;
+      const matchesSearch = !search ||
+        rt.def.name.toLowerCase().includes(search) ||
+        rt.def.headline.toLowerCase().includes(search) ||
+        DOMAIN_LABEL[rt.def.domain].toLowerCase().includes(search);
+      row.btn.style.display = (matchesDomain && matchesSearch) ? '' : 'none';
+    }
   }
 
   /** Create the DOM for one crisis. Runs once per crisis per session. */
@@ -1316,8 +1590,12 @@ export class UIController {
     for (const o of data.objectives) {
       const li = document.createElement('li');
       const pct = Math.round((o.progress ?? 0) * 100);
-      li.textContent = pct > 0 && !o.done ? `${o.text} (${pct}%)` : o.text;
-      if (o.done) li.style.color = 'var(--good)';
+      const prefix = o.done ? '✓ ' : '○ ';
+      li.textContent = pct > 0 && !o.done ? `${prefix}${o.text} (${pct}%)` : `${prefix}${o.text}`;
+      if (o.done) {
+        li.style.color = 'var(--good)';
+        li.classList.add('done');
+      }
       this.el.briefObjectives.appendChild(li);
     }
 
@@ -1382,6 +1660,7 @@ export class UIController {
   }
 
   closeSettings(): void {
+    this.cancelRebinding?.();
     this.el.settings.classList.remove('open');
   }
 
@@ -1428,20 +1707,29 @@ export class UIController {
     const body = this.el.codexBody;
     if (!body) return;
     const unlocked = new Set(this.codexData.unlockedModules);
+    const q = (this.codexSearchText || '').toLowerCase();
 
     if (this.codexTab === 'DOMAINS') {
-      body.innerHTML = DOMAINS.map((d) => {
+      const filtered = DOMAINS.filter((d) => {
+        if (!q) return true;
+        if (d.label.toLowerCase().includes(q) || d.blurb.toLowerCase().includes(q)) return true;
+        return d.unlocks.some((m) => m.module.toLowerCase().includes(q) || m.note.toLowerCase().includes(q));
+      });
+      body.innerHTML = filtered.map((d) => {
         const pts = this.codexData.domainPoints[d.id] ?? 0;
         const level = Math.floor(pts / 3) + 1;
         const mods = d.unlocks
+          .filter((m) => !q || m.module.toLowerCase().includes(q) || m.note.toLowerCase().includes(q) || d.label.toLowerCase().includes(q))
           .map((m) => {
             const on = unlocked.has(m.module);
+            const isUnread = on && !this.readCodexModules.has(m.module);
             const reqPts = m.level === 1 ? 1 : (m.level - 1) * 3;
+            const badge = on ? (isUnread ? '<span class="unread-badge">NEW</span> ACTIVE' : 'ACTIVE') : `REQ ${reqPts} PT`;
             return `
-              <div class="codex-mod ${on ? 'on' : ''}">
+              <div class="codex-mod ${on ? 'on' : ''}" data-mod="${m.module}" style="cursor:pointer">
                 <div class="codex-mod-top">
                   <b>${m.module}</b>
-                  <span class="codex-badge ${on ? 'on' : ''}">${on ? 'ACTIVE' : `REQ ${reqPts} PT`}</span>
+                  <span class="codex-badge ${on ? 'on' : ''}">${badge}</span>
                 </div>
                 <div class="codex-mod-desc">${m.note}</div>
               </div>
@@ -1459,11 +1747,22 @@ export class UIController {
           </div>
         `;
       }).join('');
+      for (const card of body.querySelectorAll<HTMLElement>('.codex-mod[data-mod]')) {
+        card.addEventListener('click', () => {
+          const mod = card.dataset.mod;
+          if (mod) {
+            this.readCodexModules.add(mod);
+            const badge = card.querySelector('.unread-badge');
+            if (badge) badge.remove();
+          }
+        });
+      }
       return;
     }
 
     if (this.codexTab === 'BLUEPRINTS') {
       const vehiclesHtml = Object.values(VEHICLE_SPECS)
+        .filter((v) => !q || v.title.toLowerCase().includes(q) || v.designation.toLowerCase().includes(q) || v.summary.toLowerCase().includes(q))
         .map(
           (v) => `
           <div class="codex-section">
@@ -1483,6 +1782,7 @@ export class UIController {
         .join('');
 
       const biomesHtml = (Object.keys(MATERIALS) as BiomeId[])
+        .filter((id) => !q || BIOME_LABEL[id].toLowerCase().includes(q))
         .map((id) => {
           const b = MATERIALS[id];
           return `
@@ -1502,9 +1802,9 @@ export class UIController {
 
       body.innerHTML = `
         <h3 class="codex-subhead">Field Machine Schematics</h3>
-        ${vehiclesHtml}
+        ${vehiclesHtml || '<div class="codex-desc">No machines match query.</div>'}
         <h3 class="codex-subhead">Sector Biome Material Ledger</h3>
-        <div class="codex-biome-grid">${biomesHtml}</div>
+        <div class="codex-biome-grid">${biomesHtml || '<div class="codex-desc">No biomes match query.</div>'}</div>
       `;
       return;
     }
@@ -1516,6 +1816,7 @@ export class UIController {
         { title: 'Blood Rings', tag: 'ARCHIVAL RECORD', lines: ARCHIVAL_REFERENCES.bloodRings },
       ];
       const refsHtml = refEntries
+        .filter((r) => !q || r.title.toLowerCase().includes(q) || r.lines.some((l) => l.toLowerCase().includes(q)))
         .map(
           (r) => `
           <div class="codex-mod on">
@@ -1537,6 +1838,7 @@ export class UIController {
         { label: 'Engineering Terms', items: GAME_LOCAL_INVENTIONS.terms.join(' · ') },
       ];
       const localHtml = localRows
+        .filter((g) => !q || g.label.toLowerCase().includes(q) || g.items.toLowerCase().includes(q))
         .map(
           (g) => `
           <div class="codex-local-row">
@@ -1548,6 +1850,7 @@ export class UIController {
         .join('');
 
       const locksHtml = Object.entries(CANON_FACTS)
+        .filter(([k, v]) => !q || k.toLowerCase().includes(q) || String(v).toLowerCase().includes(q))
         .map(
           ([k, v]) => `
           <div class="codex-lock-pill"><span>${k}</span><b>${String(v)}</b></div>
@@ -1557,7 +1860,7 @@ export class UIController {
 
       body.innerHTML = `
         <h3 class="codex-subhead">Dossier Archival Records (Established Canon)</h3>
-        <div class="codex-mod-grid">${refsHtml}</div>
+        <div class="codex-mod-grid">${refsHtml || '<div class="codex-desc">No records match query.</div>'}</div>
         <h3 class="codex-subhead">0-ARK Survey Designations (Game-Local Inventions)</h3>
         <p class="codex-desc">${GAME_LOCAL_INVENTIONS.note}</p>
         <div class="codex-local-list">${localHtml}</div>
@@ -1569,16 +1872,17 @@ export class UIController {
 
     // LOG tab
     const entries = [...this.codexData.log].reverse();
+    const filteredEntries = entries.filter((e) => !q || e.text.toLowerCase().includes(q));
     const logHtml =
-      entries.length === 0
-        ? `<div class="codex-desc">No engineering log entries recorded yet.</div>`
-        : entries
+      filteredEntries.length === 0
+        ? `<div class="codex-desc">No engineering log entries match query.</div>`
+        : filteredEntries
             .map((e, idx) => {
               return `<div class="codex-log-row"><span class="t">#${entries.length - idx}</span><span class="msg">${e.text}</span></div>`;
             })
             .join('');
     body.innerHTML = `
-      <h3 class="codex-subhead">Chronological Campaign Telemetry Log (${entries.length})</h3>
+      <h3 class="codex-subhead">Chronological Campaign Telemetry Log (${filteredEntries.length})</h3>
       <div class="codex-log-list">${logHtml}</div>
     `;
   }
@@ -1728,9 +2032,19 @@ export class UIController {
         const c = document.createElementNS(ns, 'circle');
         c.setAttribute('r', '3.1');
         c.style.cursor = 'pointer';
-        c.addEventListener('click', () => {
+        c.setAttribute('tabindex', '0');
+        c.setAttribute('role', 'button');
+        c.setAttribute('aria-label', `Select and ping Acoustic Spire ${idx + 1}`);
+        const pingThis = (): void => {
           this.selectedSpireId = idx;
           this.deps.onPingSpire?.(idx);
+        };
+        c.addEventListener('click', pingThis);
+        c.addEventListener('keydown', (e: KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            pingThis();
+          }
         });
         this.el.harmonicSpireDots.appendChild(c);
       }
@@ -1777,13 +2091,15 @@ export class UIController {
           r.setAttribute('aria-pressed', String(s.id === this.selectedSettlementId));
           r.title = `Focus globe on ${s.name} (${s.populationK}k survivors)`;
           const nameEl = document.createElement('span');
-          nameEl.textContent = s.name.split(' ')[0];
+          nameEl.textContent = s.name;
           const valEl = document.createElement('b');
           valEl.textContent = '--';
           r.append(nameEl, valEl);
           const activate = (): void => {
-            this.selectSettlement(s.id);
-            this.deps.onSelectSettlement?.(s.id);
+            const next = this.selectedSettlementId === s.id ? null : s.id;
+            this.selectSettlement(next);
+            if (next) this.deps.onSelectSettlement?.(next);
+            else this.deps.onSelectSettlement?.('');
           };
           r.addEventListener('click', activate);
           r.addEventListener('keydown', (e) => {
@@ -1805,6 +2121,20 @@ export class UIController {
           const txt = `${Math.round(s.viability * 100)}%`;
           if (b.textContent !== txt) b.textContent = txt;
         }
+        const rowEl = this.el.settlementGrid.children[i] as HTMLElement | undefined;
+        if (rowEl) {
+          const isCrit = s.viability < 0.3;
+          rowEl.classList.toggle('crit', isCrit);
+          let badge = rowEl.querySelector('.critical-badge') as HTMLElement | null;
+          if (isCrit && !badge) {
+            badge = document.createElement('span');
+            badge.className = 'critical-badge';
+            badge.textContent = 'COLLAPSE RISK';
+            rowEl.appendChild(badge);
+          } else if (!isCrit && badge) {
+            badge.remove();
+          }
+        }
       }
       if (this.el.ledgerAvg && settlements.length > 0) {
         const avgTxt = `avg ${Math.round((sum / settlements.length) * 100)}%`;
@@ -1824,6 +2154,128 @@ export class UIController {
         }
       }
     }
+  }
+
+  /** Set simulation time warp speed and update toolbar buttons. */
+  setTimeWarp(speed: number): void {
+    this.timeWarpMultiplier = speed;
+    const warpButtons = this.el.macro.querySelectorAll<HTMLButtonElement>('.time-warp-btn');
+    for (const b of warpButtons) {
+      b.classList.toggle('active', Number(b.dataset.speed) === speed);
+    }
+  }
+
+  setAudioMuted(muted: boolean): void {
+    this.isAudioMuted = muted;
+    if (this.el.hudMuteBtn) {
+      this.el.hudMuteBtn.textContent = muted ? 'Muted [U]' : 'Audio [U]';
+      this.el.hudMuteBtn.classList.toggle('muted', muted);
+    }
+    const macroMute = this.el.macroToolbar.querySelector('#macro-mute-btn') as HTMLElement | null;
+    if (macroMute) {
+      macroMute.textContent = muted ? 'Muted [U]' : 'Audio [U]';
+      macroMute.classList.toggle('muted', muted);
+    }
+  }
+
+  toggleMute(): boolean {
+    const next = this.deps.onToggleMute ? this.deps.onToggleMute() : !this.isAudioMuted;
+    this.setAudioMuted(next);
+    return next;
+  }
+
+  updateCoordinates(lat: number, lon: number, elev: number, biome: string): void {
+    const latLonEl = this.el.macro.querySelector('#coord-latlon');
+    const elevEl = this.el.macro.querySelector('#coord-elev');
+    const biomeEl = this.el.macro.querySelector('#coord-biome');
+    if (latLonEl) {
+      const latStr = `${Math.abs(lat).toFixed(1)}° ${lat >= 0 ? 'N' : 'S'}`;
+      const lonStr = `${Math.abs(lon).toFixed(1)}° ${lon >= 0 ? 'E' : 'W'}`;
+      latLonEl.textContent = `${latStr} · ${lonStr}`;
+    }
+    if (elevEl) elevEl.textContent = `${elev.toFixed(0)} m`;
+    if (biomeEl) biomeEl.textContent = biome;
+  }
+
+  updateWaypoint(screenX: number, screenY: number, distMeters: number, visible: boolean): void {
+    if (!this.el.sectorWaypoint) return;
+    if (!visible) {
+      this.el.sectorWaypoint.style.display = 'none';
+      return;
+    }
+    this.el.sectorWaypoint.style.display = 'flex';
+    const pad = 36;
+    const clampedX = Math.max(pad, Math.min(window.innerWidth - pad, screenX));
+    const clampedY = Math.max(pad, Math.min(window.innerHeight - pad, screenY));
+    this.el.sectorWaypoint.style.left = `${clampedX}px`;
+    this.el.sectorWaypoint.style.top = `${clampedY}px`;
+    if (this.el.wpDistLbl) {
+      this.el.wpDistLbl.textContent = distMeters > 1000
+        ? `${(distMeters / 1000).toFixed(2)} km`
+        : `${Math.round(distMeters)} m`;
+    }
+  }
+
+  showGpwsWarning(active: boolean, altMeters?: number): void {
+    if (!this.el.gpwsAlert) return;
+    this.el.gpwsAlert.classList.toggle('visible', active);
+    if (active && altMeters !== undefined) {
+      this.el.gpwsAlert.textContent = `⚠ TERRAIN PULL UP (${altMeters.toFixed(0)}m) ⚠`;
+    } else {
+      this.el.gpwsAlert.textContent = '⚠ TERRAIN PULL UP ⚠';
+    }
+  }
+
+  markAllCodexRead(): void {
+    for (const m of this.codexData.unlockedModules) {
+      this.readCodexModules.add(m);
+    }
+    this.renderCodex();
+    this.toast('All engineering archive entries marked read', 'good');
+  }
+
+  initTooltips(): void {
+    if (!this.tooltipEl) return;
+    const show = (el: HTMLElement) => {
+      const title = el.getAttribute('title') || el.dataset.cachedTitle;
+      if (!title) return;
+      if (!el.dataset.cachedTitle) el.dataset.cachedTitle = title;
+      el.removeAttribute('title');
+      const shortcut = el.dataset.shortcut ? `[${el.dataset.shortcut}]` : '';
+      this.showTooltip(title, shortcut, el.getBoundingClientRect());
+    };
+    const hide = (el: HTMLElement) => {
+      if (el.dataset.cachedTitle) {
+        el.setAttribute('title', el.dataset.cachedTitle);
+      }
+      this.hideTooltip();
+    };
+
+    document.addEventListener('pointerover', (e) => {
+      const target = (e.target as HTMLElement)?.closest?.('[title], [data-cached-title]') as HTMLElement | null;
+      if (target) show(target);
+    });
+    document.addEventListener('pointerout', (e) => {
+      const target = (e.target as HTMLElement)?.closest?.('[data-cached-title]') as HTMLElement | null;
+      if (target) hide(target);
+    });
+  }
+
+  showTooltip(text: string, shortcut: string, rect: DOMRect): void {
+    if (!this.tooltipEl) return;
+    this.tooltipEl.innerHTML = shortcut ? `${text} <kbd>${shortcut}</kbd>` : text;
+    this.tooltipEl.classList.add('visible');
+    const tipRect = this.tooltipEl.getBoundingClientRect();
+    let left = rect.left + rect.width / 2 - tipRect.width / 2;
+    let top = rect.top - tipRect.height - 8;
+    if (top < 8) top = rect.bottom + 8;
+    left = Math.max(8, Math.min(window.innerWidth - tipRect.width - 8, left));
+    this.tooltipEl.style.left = `${left}px`;
+    this.tooltipEl.style.top = `${top}px`;
+  }
+
+  hideTooltip(): void {
+    if (this.tooltipEl) this.tooltipEl.classList.remove('visible');
   }
 
   /** Position and populate the 3D-projected floating reticle callout on the globe. */

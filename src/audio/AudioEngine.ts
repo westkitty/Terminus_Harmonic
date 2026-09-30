@@ -206,6 +206,7 @@ export class AudioEngine {
 
   // Volumes ---------------------------------------------------------------
   private volumes = { master: 0.8, sfx: 0.9, ambient: 0.7, music: 0.55 };
+  private isMutedState = false;
   private envMix: Record<AudioEnvironment, number> = {
     ORBIT: 0,
     ATMOSPHERE: 0,
@@ -650,6 +651,139 @@ export class AudioEngine {
       osc.disconnect();
       g.disconnect();
     };
+  }
+
+  get isMuted(): boolean {
+    return this.isMutedState;
+  }
+
+  toggleMute(): boolean {
+    this.isMutedState = !this.isMutedState;
+    this.muteAll(this.isMutedState);
+    return this.isMutedState;
+  }
+
+  /** Subtle mechanical click for UI button interactions. */
+  playUiClick(): void {
+    if (!this.unlocked || !this.ctx || !this.sfxBus || this.isMutedState) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(1200, t);
+    osc.frequency.exponentialRampToValueAtTime(320, t + 0.025);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.08, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.03);
+    osc.connect(g);
+    g.connect(this.sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.035);
+    osc.onended = () => {
+      osc.disconnect();
+      g.disconnect();
+    };
+  }
+
+  /** Soft whisper hover feedback blip. */
+  playUiHover(): void {
+    if (!this.unlocked || !this.ctx || !this.sfxBus || this.isMutedState) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1760, t);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.015, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.02);
+    osc.connect(g);
+    g.connect(this.sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.025);
+    osc.onended = () => {
+      osc.disconnect();
+      g.disconnect();
+    };
+  }
+
+  /** Modal window open/close audio sweep. */
+  playUiModal(open: boolean): void {
+    if (!this.unlocked || !this.ctx || !this.sfxBus || this.isMutedState) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const startFreq = open ? 440 : 660;
+    const endFreq = open ? 720 : 330;
+    osc.frequency.setValueAtTime(startFreq, t);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, t + 0.08);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.06, t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    osc.connect(g);
+    g.connect(this.sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.1);
+    osc.onended = () => {
+      osc.disconnect();
+      g.disconnect();
+    };
+  }
+
+  /** Pulsed caution tone (e.g. GPWS terrain proximity or critical instability warning). */
+  playWarningBeep(): void {
+    if (!this.unlocked || !this.ctx || !this.sfxBus || this.isMutedState) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(880, t);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1600;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.09, t + 0.01);
+    g.gain.setValueAtTime(0.09, t + 0.07);
+    g.gain.linearRampToValueAtTime(0, t + 0.08);
+    g.gain.setValueAtTime(0.09, t + 0.11);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    osc.connect(filter);
+    filter.connect(g);
+    g.connect(this.sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.25);
+    osc.onended = () => {
+      osc.disconnect();
+      filter.disconnect();
+      g.disconnect();
+    };
+  }
+
+  /** Radiant harmonic chord chime for crisis resolution, save confirmation, etc. */
+  playSuccessChime(): void {
+    if (!this.unlocked || !this.ctx || !this.sfxBus || this.isMutedState) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const freqs = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6 major chord
+    freqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t + idx * 0.04);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t + idx * 0.04);
+      g.gain.linearRampToValueAtTime(0.05, t + idx * 0.04 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + idx * 0.04 + 0.55);
+      osc.connect(g);
+      g.connect(this.sfxBus!);
+      osc.start(t + idx * 0.04);
+      osc.stop(t + idx * 0.04 + 0.6);
+      osc.onended = () => {
+        osc.disconnect();
+        g.disconnect();
+      };
+    });
   }
 
   dispose(): void {

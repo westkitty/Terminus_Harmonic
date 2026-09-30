@@ -1066,6 +1066,19 @@ export class CommandGlobe {
     };
   }
 
+  /** Raycast directly against the planetary surface to get geographic coordinates. */
+  pickSurface(raycaster: THREE.Raycaster): { lat: number; lon: number; elevation: number; hit: boolean } {
+    const hits = raycaster.intersectObject(this.planetMesh, false);
+    if (hits.length === 0) return { lat: 0, lon: 0, elevation: 0, hit: false };
+    const pt = hits[0].point.clone();
+    this.planetMesh.worldToLocal(pt);
+    const elevation = Math.max(0, Math.round((pt.length() - this.planetRadius) * 180));
+    pt.normalize();
+    const lat = Math.asin(Math.max(-1, Math.min(1, pt.y))) * (180 / Math.PI);
+    const lon = Math.atan2(pt.z, pt.x) * (180 / Math.PI);
+    return { lat, lon, elevation, hit: true };
+  }
+
   /** Node screen position for HTML label anchoring (true when on visible front hemisphere). */
   projectNode(id: string, camera: THREE.Camera, out: THREE.Vector3): boolean {
     const m = this.markerById.get(id) ?? this.markerMeshes.find((x) => x.userData.nodeId === id);

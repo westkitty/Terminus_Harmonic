@@ -33,8 +33,20 @@ export type ActionName =
   | 'ascendMacro'
   | 'cameraCycle'
   | 'overlayNext'
+  | 'overlayPrev'
   | 'map'
-  | 'pause';
+  | 'pause'
+  | 'codex'
+  | 'quickSave'
+  | 'quickLoad'
+  | 'timeWarpPause'
+  | 'timeWarpFaster'
+  | 'timeWarpSlower'
+  | 'headlights'
+  | 'autoLevel'
+  | 'cruiseControl'
+  | 'muteToggle'
+  | 'resetCamera';
 
 export const ACTION_LABELS: Record<ActionName, string> = {
   throttle: 'Forward / Throttle',
@@ -59,8 +71,20 @@ export const ACTION_LABELS: Record<ActionName, string> = {
   ascendMacro: 'Return to Command Lattice',
   cameraCycle: 'Cycle Camera',
   overlayNext: 'Next Overlay',
+  overlayPrev: 'Previous Overlay',
   map: 'Toggle Map',
   pause: 'Pause / Menu',
+  codex: 'Survey Archive & Codex',
+  quickSave: 'Quick Save',
+  quickLoad: 'Quick Load',
+  timeWarpPause: 'Pause / Unpause Sim',
+  timeWarpFaster: 'Increase Sim Speed',
+  timeWarpSlower: 'Decrease Sim Speed',
+  headlights: 'Toggle Headlights',
+  autoLevel: 'Auto-Level Horizon',
+  cruiseControl: 'Cruise Control Lock',
+  muteToggle: 'Mute Audio',
+  resetCamera: 'Reset Camera Orientation',
 };
 
 export type KeyBinding = Record<ActionName, string[]>;
@@ -87,9 +111,21 @@ export const DEFAULT_BINDINGS: KeyBinding = {
   interact: ['KeyG'],
   ascendMacro: ['Escape', 'KeyM'],
   cameraCycle: ['KeyV'],
-  overlayNext: ['KeyO'],
-  map: ['Tab'],
+  overlayNext: ['Tab', 'KeyO'],
+  overlayPrev: ['Backquote'],
+  map: ['KeyM'],
   pause: ['KeyP'],
+  codex: ['KeyC'],
+  quickSave: ['F5'],
+  quickLoad: ['F9'],
+  timeWarpPause: ['Space'],
+  timeWarpFaster: ['BracketRight', 'Period'],
+  timeWarpSlower: ['BracketLeft', 'Comma'],
+  headlights: ['KeyH'],
+  autoLevel: ['KeyX'],
+  cruiseControl: ['KeyZ'],
+  muteToggle: ['KeyU'],
+  resetCamera: ['Home'],
 };
 
 interface ActionState {
@@ -239,7 +275,7 @@ export class InputManager {
   };
 
   private onMouseMove = (e: MouseEvent): void => {
-    if (!this.pointerLocked) return;
+    if (!this.pointerLocked && !this.mouseDown.has(0) && !this.mouseDown.has(2)) return;
     this.accumDx += e.movementX;
     this.accumDy += e.movementY;
   };

@@ -84,6 +84,20 @@ export const BIOME_LABEL: Record<BiomeId, string> = {
   CRUSTAL_VENT: 'Crustal Vent',
 };
 
+/** Deterministic biome classification from geographic coordinates. */
+export function latLonBiome(lat: number, lon: number): BiomeId {
+  const absLat = Math.abs(lat);
+  if (absLat > 65) return 'SHATTERED_BASALT';
+  if (absLat > 45) return 'FOSSIL_STRATA';
+  const h = Math.sin(lat * 0.12) * Math.cos(lon * 0.08);
+  if (h > 0.45) return 'GLASS_LATTICE';
+  if (h > 0.2) return 'VITRIFIED_BASIN';
+  if (h > -0.1) return 'REMNANT_SOIL';
+  if (h > -0.3) return 'SALT_FLAT';
+  if (h > -0.5) return 'PETRIFIED_MEGAFLORA';
+  return 'CRUSTAL_VENT';
+}
+
 /**
  * Deterministic world seed. Changing this regenerates every sector, every
  * terrain field and every debris belt; saved games pin the seed so a reload
