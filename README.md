@@ -156,13 +156,13 @@ Everything below was run in this workspace:
 
 | Check | Result |
 |---|---|
-| `npm run verify` | green — typecheck, canon gate, 155 tests |
-| Canon gate | 44 files, 16,919 lines, 11 prohibitions, 8 required locks |
-| `npx vitest run` | 155 passed across 13 files |
-| `npm run build` | 2.40 kB html · 214.19 kB js · 484.12 kB three chunk · 17.82 kB css |
-| Production preview | every route HTTP 200 |
+| `npm run verify` | green — typecheck, canon gate, 156 tests |
+| Canon gate | 47 files, 17,370 lines, 11 prohibitions, 8 required locks |
+| `npx vitest run` | 156 passed across 14 files |
+| `npm run build` | 2.40 kB html · 215.92 kB js · 484.12 kB three chunk · 17.82 kB css |
+| Production preview | every route HTTP 200, hashed assets as `text/javascript` |
 | Dev server | HTTP 200 on the preview host |
-| `node --check dist/sw.js` | parses as plain JavaScript |
+| `node --check public/sw.js` | parses as plain JavaScript |
 
 The integration suite drives the real `Game` orchestrator inside jsdom with the
 WebGL renderer replaced by a recording stub: boot, campaign start, node
@@ -187,6 +187,11 @@ Two suites exist because the things they cover were asserted but unproven:
   the accessibility settings: the game now *starts* in the configuration the
   user's operating system already asked for, instead of defaulting to full
   motion and screen shake and making them hunt for the toggle.
+- `tests/newworld.test.ts` drives a real `Game` all the way to
+  `harmonicUnlocked` through the crisis objectives, then calls `newWorld()` and
+  asserts the result is genuinely fresh. It failed on its first run — all eight
+  repaired spires, the unlocked Harmonic and the old campaign's domain points
+  survived the "New World" button — which is the bug it was written to find.
 - `tests/canon.test.ts` proves the canon gate has teeth rather than merely being
   green: it plants eight real violations in a real scannable file in a scratch
   copy of the tree and demands a non-zero exit that names the rule, then confirms
