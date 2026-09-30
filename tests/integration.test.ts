@@ -56,6 +56,9 @@ vi.mock('three', async (importOriginal) => {
 
 let dom: JSDOM;
 
+/** Which OS preferences the stub matchMedia should report. */
+let osPrefs = { reducedMotion: false, highContrast: false };
+
 function installEnv(): void {
   dom = new JSDOM(
     `<!doctype html><html><body><div id="app"><canvas id="scene"></canvas></div></body></html>`,
@@ -77,6 +80,14 @@ function installEnv(): void {
   g.requestAnimationFrame = ((fn: FrameRequestCallback) => setTimeout(() => fn(performance.now()), 16) as unknown as number);
   g.cancelAnimationFrame = ((id: number) => clearTimeout(id)) as unknown as (h: number) => void;
   g.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+  // jsdom has no matchMedia; the game reads the OS accessibility preferences
+  // through it, so the stub has to answer for both of them.
+  (g.window as { matchMedia: (q: string) => unknown }).matchMedia = (q: string) => ({
+    matches:
+      q.includes('prefers-reduced-motion') ? osPrefs.reducedMotion : q.includes('prefers-contrast') ? osPrefs.highContrast : false,
+    addEventListener(): void {},
+    removeEventListener(): void {},
+  });
   // jsdom has no canvas 2D/WebGL backend; the game's UI never draws to one.
   (dom.window.HTMLCanvasElement.prototype as unknown as { getContext: () => null }).getContext = () => null;
 }
@@ -84,6 +95,7 @@ function installEnv(): void {
 let Game: typeof import('../src/game/Game').Game;
 
 beforeEach(async () => {
+  osPrefs = { reducedMotion: false, highContrast: false };
   installEnv();
   renderLog.length = 0;
   if (!Game) Game = (await import('../src/game/Game')).Game;
@@ -345,6 +357,47 @@ describe('Game integration', () => {
     expect(st.phaseOrder).toBeGreaterThan(0.9);
     // The reward is a permanent baseline shift, so it must outlive the session.
     expect(st.globalHealth).toBeGreaterThan(before.globalHealth);
+
+    // Pacing invariant: the Harmonic is the payoff, not the ending. Six of the
+    // seven crises bring the network to its floor, which leaves a final act
+    // after the network establishes itself.
+    expect(st.resolvedCount).toBeGreaterThanOrEqual(6);
+    expect(st.crisisCount - st.resolvedCount).toBeGreaterThanOrEqual(1);
+    game.dispose();
+  });
+
+  it('adopts the OS motion and contrast preferences instead of ignoring them', () => {
+    // The user has asked their system to reduce motion. The game must start
+    // that way without them hunting for the toggle.
+    osPrefs = { reducedMotion: true, highContrast: true };
+    const game = makeGame();
+    const st = game.debugState();
+    expect(st.settings.reducedMotion).toBe(true);
+    expect(st.settings.screenShake).toBe(false);
+    expect(st.settings.highContrast).toBe(true);
+    expect(dom.window.document.body.classList.contains('reduced-motion')).toBe(true);
+    expect(dom.window.document.body.classList.contains('high-contrast')).toBe(true);
+    game.dispose();
+  });
+
+  it('leaves motion on when the OS has no preference', () => {
+    const game = makeGame();
+    const st = game.debugState();
+    expect(st.settings.reducedMotion).toBe(false);
+    expect(st.settings.screenShake).toBe(true);
+    expect(dom.window.document.body.classList.contains('reduced-motion')).toBe(false);
+    game.dispose();
+  });
+
+  it('lets an explicit setting override the OS preference', () => {
+    osPrefs = { reducedMotion: true, highContrast: false };
+    const game = makeGame();
+    expect(game.debugState().settings.reducedMotion).toBe(true);
+    game.applySettings({ reducedMotion: false, screenShake: true });
+    const st = game.debugState();
+    expect(st.settings.reducedMotion).toBe(false);
+    expect(st.settings.screenShake).toBe(true);
+    expect(dom.window.document.body.classList.contains('reduced-motion')).toBe(false);
     game.dispose();
   });
 

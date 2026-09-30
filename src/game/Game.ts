@@ -17,6 +17,7 @@ import { EventBus, Events } from '../core/events';
 import { InputManager, DEFAULT_BINDINGS, type ActionName, type KeyBinding } from '../core/input';
 import { PerformanceMonitor, type QualitySettings } from '../core/perf';
 import { clamp01, damp, DEG2RAD, latLonToVec3 } from '../core/math';
+import { prefersHighContrast, prefersReducedMotion, watchPreference } from '../core/media';
 import { PlanetaryState } from '../state/planetary';
 import {
   ACOUSTIC_SPIRES,
@@ -152,6 +153,11 @@ export class Game {
     this.settings = defaultSettings();
     this.settings.qualityTier = this.perf.currentTier;
     this.settings.adaptiveQuality = true;
+    // Seed the accessibility settings from the OS rather than from a hard-coded
+    // default. A restored save or an explicit toggle still overrides this.
+    this.settings.reducedMotion = prefersReducedMotion();
+    this.settings.screenShake = !prefersReducedMotion();
+    this.settings.highContrast = prefersHighContrast();
 
     this.planetary = new PlanetaryState(WORLD_SEED);
     this.settlements = SETTLEMENTS.map((s) => ({
@@ -211,11 +217,27 @@ export class Game {
 
     this.registerSystems();
     this.ui.applySettings(this.settings);
+    this.watchPreferences();
     this.ui.startBootSequence(BOOT_LINES);
     this.crises.refreshAvailability(this.functionalSpireCount());
     this.ui.setCrises(this.crises.all(), null);
     this.ui.setOverlay('ATMOSPHERE');
     this.globe.setOverlay('ATMOSPHERE');
+  }
+
+  /**
+   * If the user flips the OS motion or contrast preference while playing, adopt
+   * it immediately rather than waiting for a reload.
+   */
+  private watchPreferences(): void {
+    this.prefDisposers.push(
+      watchPreference('(prefers-reduced-motion: reduce)', (on) => {
+        this.applySettings({ reducedMotion: on, screenShake: !on });
+      }),
+      watchPreference('(prefers-contrast: more)', (on) => {
+        this.applySettings({ highContrast: on });
+      }),
+    );
   }
 
   // -- systems --------------------------------------------------------------
@@ -849,6 +871,7 @@ export class Game {
   }
 
   private harmonicUnlocked = false;
+  private readonly prefDisposers: (() => void)[] = [];
 
   /**
    * Fire once, the first frame the spire network is both broad enough and
@@ -1196,6 +1219,8 @@ export class Game {
     this.scale.dispose();
     this.world.dispose();
     this.renderer.dispose();
+    for (const d of this.prefDisposers) d();
+    this.prefDisposers.length = 0;
   }
 
   // -- debug hooks ----------------------------------------------------------

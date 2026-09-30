@@ -156,9 +156,9 @@ Everything below was run in this workspace:
 
 | Check | Result |
 |---|---|
-| `npm run verify` | green — typecheck, canon gate, 145 tests |
+| `npm run verify` | green — typecheck, canon gate, 155 tests |
 | Canon gate | 44 files, 16,919 lines, 11 prohibitions, 8 required locks |
-| `npx vitest run` | 145 passed across 12 files |
+| `npx vitest run` | 155 passed across 13 files |
 | `npm run build` | 2.40 kB html · 214.19 kB js · 484.12 kB three chunk · 17.82 kB css |
 | Production preview | every route HTTP 200 |
 | Dev server | HTTP 200 on the preview host |
@@ -183,6 +183,10 @@ Two suites exist because the things they cover were asserted but unproven:
   network connection. It also caught a race: `unlock()` awaited `resume()` and
   then read `this.ctx.state`, but `dispose()` nulls the context, so unlocking
   and disposing in the same tick threw an unhandled rejection.
+- `tests/media.test.ts` and the OS-preference cases in the integration suite cover
+  the accessibility settings: the game now *starts* in the configuration the
+  user's operating system already asked for, instead of defaulting to full
+  motion and screen shake and making them hunt for the toggle.
 - `tests/canon.test.ts` proves the canon gate has teeth rather than merely being
   green: it plants eight real violations in a real scannable file in a scratch
   copy of the tree and demands a non-zero exit that names the rule, then confirms
