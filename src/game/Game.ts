@@ -213,8 +213,18 @@ export class Game {
       onImport: (text) => this.importSave(text),
       onNewWorld: () => this.newWorld(),
       onCycleCamera: () => this.cycleCamera(),
+      onPingSpire: (spireId) => this.pingSpire(spireId),
     });
+    this.ui.touchMove = (x, y) => this.input.setTouchAxis(x, 0, -y);
+    this.ui.touchLook = (dx, dy) => this.input.addTouchLook(dx, dy);
+    this.ui.touchButton = (action, down) => {
+      this.input.setTouchButton(action, down);
+      if (down && action === 'ascendMacro') this.ascend();
+      if (down && action === 'cameraCycle') this.cycleCamera();
+    };
 
+    this.bindCrisisHandler();
+    this.bindGlobePointer();
     this.registerSystems();
     this.ui.applySettings(this.settings);
     this.watchPreferences();
@@ -243,21 +253,48 @@ export class Game {
   // -- systems --------------------------------------------------------------
 
   private saveSystem!: SaveSystem;
+  private globalStateSystem!: GlobalStateSystem;
+  private possessionSystem!: VehiclePossessionSystem;
+  private uiSystem!: UISystem;
+
+  private bindCrisisHandler(): void {
+    this.crises.setCompletionHandler((r) => {
+      // Partial slices (0 < completion < 1) and the pre-resolve undo slice
+      // (completion === 0) adjust the planetary baseline incrementally.
+      if (r.completion < 1) {
+        this.planetary.raiseBaseline(r.applied, 1);
+      }
+      if (r.completion > 0) {
+        this.bus.emit(Events.CrisisProgress, {
+          id: r.crisisId,
+          name: r.name,
+          completion: r.completion,
+        });
+      }
+    });
+  }
 
   private registerSystems(): void {
-    const possession = new VehiclePossessionSystem(this.bus, this.input, () => this.cycleCamera());
-    this.world.addSystem(new GlobalStateSystem(this.planetary));
+    this.possessionSystem = new VehiclePossessionSystem(
+      this.bus,
+      this.input,
+      () => this.cycleCamera(),
+      () => this.scale.scale,
+      (v) => this.tickContinuousObjectives(v),
+    );
+    this.globalStateSystem = new GlobalStateSystem(this.planetary);
+    this.world.addSystem(this.globalStateSystem);
     this.world.addSystem(this.weather);
     this.world.addSystem(this.logistics);
     this.world.addSystem(this.harmonic);
     this.world.addSystem(
       new TerrainStreamingSystem(
-        this.sectorTerrain,
+        () => this.sectorTerrain,
         () => this.playerPosition,
         () => this.quality,
       ),
     );
-    this.world.addSystem(possession);
+    this.world.addSystem(this.possessionSystem);
     this.world.addSystem(new CameraSystem([]));
     this.world.addSystem(
       new AudioSystem(
@@ -285,24 +322,25 @@ export class Game {
     this.saveSystem = new SaveSystem();
     this.saveSystem.setSaveHandler((manual) => void this.saveGame(manual));
     this.world.addSystem(this.saveSystem);
-    this.world.addSystem(
-      new UISystem(
-        this.ui,
-        this.planetary,
-        () => this.scale.scale,
-        () => this.activeVehicle,
-        () => this.crises.all(),
-        () => ({
-          coherence: this.harmonic.coherence,
-      harmonicUnlocked: this.harmonicUnlocked,
-      spireCoverage: this.harmonic.coverage,
-      phaseOrder: this.harmonic.phaseOrder,
-          functional: this.functionalSpireCount(),
-          total: this.spires.length,
-          unlocked: this.harmonicUnlocked,
-        }),
-      ),
+    this.uiSystem = new UISystem(
+      this.ui,
+      this.planetary,
+      () => this.scale.scale,
+      () => this.activeVehicle,
+      () => this.crises.all(),
+      () => ({
+        coherence: this.harmonic.coherence,
+        harmonicUnlocked: this.harmonicUnlocked,
+        spireCoverage: this.harmonic.coverage,
+        phaseOrder: this.harmonic.phaseOrder,
+        functional: this.functionalSpireCount(),
+        total: this.spires.length,
+        unlocked: this.harmonicUnlocked,
+      }),
+      () => this.crises.objectiveLines(),
+      () => this.selectedNodeId,
     );
+    this.world.addSystem(this.uiSystem);
   }
 
   // -- lifecycle ------------------------------------------------------------
@@ -444,7 +482,10 @@ export class Game {
   private handleGlobalInput(): void {
     if (this.ui.isSettingsOpen || this.ui.isBriefingOpen) {
       this.input.setEnabled(false);
-      if (this.input.pressed('pause')) this.ui.closeSettings();
+      if (this.input.pressed('pause')) {
+        if (this.ui.isSettingsOpen) this.ui.closeSettings();
+        if (this.ui.isBriefingOpen) this.ui.closeBriefing();
+      }
       return;
     }
     this.input.setEnabled(true);
@@ -498,9 +539,21 @@ export class Game {
       this.globe.setAtmosphereToxicity(this.planetary.vars.atmosphereToxicity);
       this.ui.updateMacro(this.planetary, now);
       this.ui.setCrises(this.crises.all(), this.selectedNodeId);
-      this.pickGlobe();
+      this.ui.updateHarmonicScope(
+        this.spires,
+        this.harmonic.phases,
+        this.harmonic.locks,
+        this.harmonic.refPhase,
+        this.harmonic.coverage,
+        this.harmonic.phaseOrder,
+        this.selectedSpireId,
+      );
+      this.ui.updateLedger(this.settlements, this.save.campaign.unlockedModules);
+      this.updateMacroReticle();
       return;
     }
+
+    this.ui.updateGlobeReticle(null);
 
     if (s === 'ORBIT') {
       this.scale.updateSectorCamera(dt);
@@ -511,6 +564,9 @@ export class Game {
       this.skyOrbit.setEnvironment(0.05, 0.05, 1.15);
       this.skyOrbit.follow(this.scale.cameras.ORBIT);
       this.updateVehicleCamera();
+      if (this.activeVehicle) {
+        this.ui.setVehicleTelemetry(this.activeVehicle.cameraMode, this.activeVehicle.controls);
+      }
       return;
     }
 
@@ -524,6 +580,9 @@ export class Game {
       this.skySector.setEnvironment(density, this.planetary.vars.atmosphereToxicity, 0.95);
       this.skySector.follow(this.scale.cameras.SECTOR);
       this.updateVehicleCamera();
+      if (this.activeVehicle) {
+        this.ui.setVehicleTelemetry(this.activeVehicle.cameraMode, this.activeVehicle.controls);
+      }
       this.applyShake(dt);
       return;
     }
@@ -543,12 +602,8 @@ export class Game {
     if (!v) return;
     v.getCameraTarget({ position: this._camPos, lookAt: this._camLook });
     this.scale.setSectorCameraTarget(this._camPos, this._camLook);
-    if (v.kind === 'ORBITAL_SKIFF') {
-      const skiff = v as OrbitalSkiff;
-      this.playerPosition.set(skiff.position.x, 0, skiff.position.z);
-    } else {
-      this.playerPosition.copy(v.object3D.position);
-    }
+    const wp = v.worldPosition;
+    this.playerPosition.set(wp.x, 0, wp.z);
   }
 
   private applyShake(dt: number): void {
@@ -567,36 +622,135 @@ export class Game {
     cam.position.z += (Math.random() - 0.5) * k;
   }
 
-  // -- globe picking --------------------------------------------------------
+  // -- globe picking & reticle ---------------------------------------------
 
   private pointerDownPos: { x: number; y: number; t: number } | null = null;
+  private hoveredNodeId: string | null = null;
+  private hoveredSpireId: number | null = null;
+  private selectedSpireId = 0;
+  private globePointerCleanup: (() => void) | null = null;
 
-  private pickGlobe(): void {
-    // Click (not drag) picks a node.
+  private bindGlobePointer(): void {
     const canvas = this.canvas;
-    if (this.pointerDownPos === null) {
-      const onDown = (e: PointerEvent): void => {
-        this.pointerDownPos = { x: e.clientX, y: e.clientY, t: performance.now() };
-      };
-      const onUp = (e: PointerEvent): void => {
-        const d = this.pointerDownPos;
-        this.pointerDownPos = null;
-        if (!d) return;
-        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) return;
-        if (performance.now() - d.t > 600) return;
-        const rect = canvas.getBoundingClientRect();
-        const ndc = new THREE.Vector2(
-          ((e.clientX - rect.left) / rect.width) * 2 - 1,
-          -((e.clientY - rect.top) / rect.height) * 2 + 1,
-        );
-        const ray = new THREE.Raycaster();
-        ray.setFromCamera(ndc, this.scale.cameras.MACRO);
-        const hit = this.globe.pick(ray);
-        if (hit.nodeId) this.selectNode(hit.nodeId);
-      };
-      canvas.addEventListener('pointerdown', onDown);
-      canvas.addEventListener('pointerup', onUp);
+    const ray = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+
+    const castAt = (clientX: number, clientY: number) => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return { nodeId: null, spireId: null };
+      ndc.set(
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      ray.setFromCamera(ndc, this.scale.cameras.MACRO);
+      return this.globe.pick(ray);
+    };
+
+    const onDown = (e: PointerEvent): void => {
+      if (this.scale.scale !== 'MACRO') return;
+      this.pointerDownPos = { x: e.clientX, y: e.clientY, t: performance.now() };
+    };
+
+    const onMove = (e: PointerEvent): void => {
+      if (this.scale.scale !== 'MACRO') return;
+      const hit = castAt(e.clientX, e.clientY);
+      this.hoveredNodeId = hit.nodeId;
+      this.hoveredSpireId = hit.spireId;
+      this.globe.hoveredNode = hit.nodeId;
+    };
+
+    const onUp = (e: PointerEvent): void => {
+      const d = this.pointerDownPos;
+      this.pointerDownPos = null;
+      if (!d || this.scale.scale !== 'MACRO') return;
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) return;
+      if (performance.now() - d.t > 600) return;
+      const hit = castAt(e.clientX, e.clientY);
+      if (hit.nodeId) {
+        this.selectNode(hit.nodeId);
+      } else if (hit.spireId !== null) {
+        this.pingSpire(hit.spireId);
+      }
+    };
+
+    canvas.addEventListener('pointerdown', onDown);
+    canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('pointerup', onUp);
+    this.globePointerCleanup = () => {
+      canvas.removeEventListener('pointerdown', onDown);
+      canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('pointerup', onUp);
+    };
+  }
+
+  /** Ping and phase-nudge an acoustic spire from the Command Lattice. */
+  pingSpire(spireId: number): void {
+    const sp = this.spires.find((s) => s.id === spireId);
+    const def = ACOUSTIC_SPIRES[spireId];
+    if (!sp || !def) return;
+    this.selectedSpireId = spireId;
+    this.ui.selectSpire(spireId);
+    this.scale.focusNode(def.lat, def.lon, 100);
+    this.audio.uiTone(def.baseFreq * 4, 0.16);
+    if (sp.functional) {
+      this.harmonic.lockSpire(spireId, 1);
+      this.bus.emit(Events.Toast, {
+        message: `${def.name} phase-pulsed (${def.baseFreq} Hz · reference aligned)`,
+        kind: 'good',
+      });
+    } else {
+      this.bus.emit(Events.Toast, {
+        message: `${def.name} dormant (${def.foundation}) — resolve a sector crisis to restore.`,
+        kind: '',
+      });
     }
+  }
+
+  private updateMacroReticle(): void {
+    const w = this.canvas.clientWidth || window.innerWidth || 1280;
+    const h = this.canvas.clientHeight || window.innerHeight || 720;
+    const nodeId = this.hoveredNodeId ?? this.selectedNodeId;
+    if (nodeId) {
+      const rt = this.crises.get(nodeId as CrisisId);
+      if (rt && this.globe.projectNode(nodeId, this.scale.cameras.MACRO, this._v1)) {
+        const x = (this._v1.x * 0.5 + 0.5) * w;
+        const y = (-this._v1.y * 0.5 + 0.5) * h;
+        this.ui.updateGlobeReticle({
+          visible: true,
+          x,
+          y,
+          kind: 'node',
+          title: rt.def.name,
+          tag: rt.status,
+          sub: `${rt.def.lat.toFixed(0)}° / ${rt.def.lon.toFixed(0)}° · ${rt.def.headline}`,
+          actionLabel: rt.status === 'LOCKED' ? 'Inspect Lock' : 'Open Briefing',
+          nodeId,
+        });
+        return;
+      }
+    }
+    const spireId = this.hoveredSpireId;
+    if (spireId !== null) {
+      const sp = this.spires[spireId];
+      const def = ACOUSTIC_SPIRES[spireId];
+      if (sp && def && this.globe.projectSpire(spireId, this.scale.cameras.MACRO, this._v1)) {
+        const x = (this._v1.x * 0.5 + 0.5) * w;
+        const y = (-this._v1.y * 0.5 + 0.5) * h;
+        this.ui.updateGlobeReticle({
+          visible: true,
+          x,
+          y,
+          kind: 'spire',
+          title: def.name,
+          tag: sp.functional ? `${def.baseFreq} Hz` : 'OFFLINE',
+          sub: `${def.lat.toFixed(0)}° / ${def.lon.toFixed(0)}° · ${def.foundation}`,
+          actionLabel: sp.functional ? 'Pulse Phase' : 'Ping Spire',
+          spireId,
+        });
+        return;
+      }
+    }
+    this.ui.updateGlobeReticle(null);
   }
 
   // -- node selection & briefing -------------------------------------------
@@ -727,10 +881,19 @@ export class Game {
     this.sectorEnv.buildSpires(spireIds, this.spires.map((x) => x.functional));
 
     // Vehicle.
+    const isOrbitScale = this.scale.scale === 'ORBIT' || (def.vehicle === 'ORBITAL_SKIFF' && def.domain === 'ORBIT');
     const vehicle = this.getOrCreateVehicle(def.vehicle);
-    vehicle.spawn(this._v1.set(spawnX, this.sectorField.surfaceY, spawnZ), 0);
-    this.scale.scenes.SECTOR.add(vehicle.object3D);
+    const spawnY =
+      def.vehicle === 'ORBITAL_SKIFF'
+        ? isOrbitScale
+          ? 0
+          : this.sectorField.surfaceY + 85
+        : this.sectorField.surfaceY;
+    vehicle.spawn(this._v1.set(spawnX, spawnY, spawnZ), 0);
+    const targetScene = isOrbitScale ? this.scale.scenes.ORBIT : this.scale.scenes.SECTOR;
+    targetScene.add(vehicle.object3D, vehicle.worldGroup);
     this.activeVehicle = vehicle;
+    this.possessionSystem.possess(vehicle);
 
     // Sector sun direction: carried from the macro sun, projected onto the node
     // normal, so the lighting is continuous across the transition.
@@ -748,9 +911,9 @@ export class Game {
     // Sector entry camera: continue the descent.
     const approach = latLonToVec3(def.lat, def.lon, 1, [0, 0, 0]);
     this.scale.setSectorEntry(
-      this._v3.set(spawnX, this.sectorField.surfaceY + 2, spawnZ),
+      this._v3.set(spawnX, isOrbitScale ? 12 : this.sectorField.surfaceY + 2, spawnZ),
       this._v1.set(-approach[0], -approach[1], -approach[2]).normalize(),
-      900,
+      isOrbitScale ? 260 : 900,
     );
 
     // Vehicle-specific setup.
@@ -807,11 +970,17 @@ export class Game {
     if (vehicle.kind === 'ORBITAL_SKIFF') {
       const skiff = vehicle as OrbitalSkiff;
       if (skiff.corridorDensity < 0.12) this.crises.report('corridor', 1);
+      if (skiff.target && skiff.position.distanceTo(skiff.target.position) < 380) {
+        this.crises.report('diagnose', 1);
+      }
     } else if (vehicle.kind === 'STRATA_CRAWLER') {
       const c = vehicle as StrataCrawler;
       if (c.depth > 40) this.crises.report('descend', 1);
+      if (c.depth > 16 || c.drillTime > 2.5) this.crises.report('survey', 1);
       if (c.exchangersInstalled >= 2) this.crises.report('exchanger', 2);
-      if (c.cutterTemperature < 0.9) this.crises.report('coolant', 1);
+      if ((c.depth > 20 || c.exchangersInstalled >= 1) && c.cutterTemperature < 0.9) {
+        this.crises.report('coolant', 1);
+      }
       if (c.drillTime > 12) this.crises.report('bore', 1);
       if (this.sectorLattice && this.sectorLattice.carvedCount > 400) this.crises.report('seal', 1);
     } else if (vehicle.kind === 'GLIDER') {
@@ -822,8 +991,12 @@ export class Game {
     } else if (vehicle.kind === 'LAND_TRAIN') {
       const t = vehicle as LandTrain;
       if (t.deliveredCount >= 3) this.crises.report('deliver', 3);
-      if (t.predictedFailureRatio < 0.35) this.crises.report('route', 1);
+      if (t.deliveredCount >= 1) this.crises.report('clear', 1);
+      if ((t.deliveredCount >= 1 || Math.abs(t.speed) > 4) && t.predictedFailureRatio < 0.35) {
+        this.crises.report('route', 1);
+      }
     }
+    if (this.crises.isComplete()) this.resolveCrisis();
   }
 
   resolveCrisis(): void {
@@ -915,6 +1088,7 @@ export class Game {
   private buildVehicleEnvironment(): VehicleEnvironment {
     const field = this.sectorField!;
     const lattice = this.sectorLattice!;
+    const isOrbit = this.scale.scale === 'ORBIT';
     return {
       world: this.world,
       input: this.input,
@@ -923,7 +1097,7 @@ export class Game {
       planetary: this.planetary,
       sunDirection: this._sectorSunDir,
       wind: this.envWind,
-      camera: this.scale.cameras.SECTOR,
+      camera: isOrbit ? this.scale.cameras.ORBIT : this.scale.cameras.SECTOR,
       impact: (i, b) => this.audio.impact(i, b),
       blip: (x, y, z, f, g) => this.audio.spatialBlip(x, y, z, f, g),
       reportObjective: (id, amount = 1) => {
@@ -937,11 +1111,14 @@ export class Game {
   }
 
   private getOrCreateVehicle(kind: VehicleKind): VehicleBase {
+    const env = this.buildVehicleEnvironment();
     let v = this.vehicles.get(kind);
-    if (v) return v;
+    if (v) {
+      v.setEnvironment(env);
+      return v;
+    }
     // Vehicles are created lazily and reused; the environment is rebuilt each
     // descent so the machine always sees the live sector.
-    const env = this.buildVehicleEnvironment();
     switch (kind) {
       case 'ORBITAL_SKIFF':
         v = new OrbitalSkiff(this.world, env);
@@ -961,8 +1138,10 @@ export class Game {
   }
 
   private teardownSector(): void {
+    this.possessionSystem?.release();
     if (this.activeVehicle) {
-      this.scale.scenes.SECTOR.remove(this.activeVehicle.object3D);
+      this.scale.scenes.SECTOR.remove(this.activeVehicle.object3D, this.activeVehicle.worldGroup);
+      this.scale.scenes.ORBIT.remove(this.activeVehicle.object3D, this.activeVehicle.worldGroup);
       // Keep the vehicle object alive (pooled) but detach it from the scene.
     }
     if (this.sectorTerrain) {
@@ -1193,6 +1372,7 @@ export class Game {
 
     this.planetary = new PlanetaryState(seed);
     this.crises = new CrisisController(CRISIS_NODES);
+    this.bindCrisisHandler();
     this.settlements = SETTLEMENTS.map((s) => ({ ...s }));
     this.spires = ACOUSTIC_SPIRES.map((s) => ({
       id: s.id,
@@ -1201,9 +1381,12 @@ export class Game {
       repairs: s.id < 2 ? 2 : 0,
       seated: true,
     }));
-    this.weather = new WeatherSystem(this.planetary, seed);
-    this.logistics = new LogisticsSystem(this.planetary, this.settlements);
-    this.harmonic = new HarmonicSystem(this.planetary, this.spires);
+    this.globalStateSystem.rebind(this.planetary);
+    this.weather.rebind(this.planetary, seed);
+    this.logistics.rebind(this.planetary, this.settlements);
+    this.harmonic.rebind(this.planetary, this.spires);
+    this.uiSystem.rebind(this.planetary);
+    this.ui.setPlanetary(this.planetary);
     this.harmonicUnlocked = false;
 
     // Pooled machines hold sector-specific tuning and objective state.
@@ -1249,6 +1432,8 @@ export class Game {
     cancelAnimationFrame(this.rafId);
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    this.globePointerCleanup?.();
+    this.globePointerCleanup = null;
     this.input.dispose();
     this.audio.dispose();
     this.ui.dispose();

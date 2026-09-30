@@ -5,6 +5,10 @@
  * Every vehicle is a self-contained controller that owns:
  *   - an ECS entity (so it participates in queries, persistence and telemetry);
  *   - a THREE.Object3D rig (so the renderer never needs to know the physics);
+ *   - a world-space companion group (`worldGroup`) for detached/deployed
+ *     elements (debris, tethers, delivery zones, excavated tunnel shells,
+ *     installed exchangers, dropped sensors) that must not inherit the hull's
+ *     transform;
  *   - a HUD model (so the UI renders gauges without knowing the machine);
  *   - its own physics step (they are deliberately NOT unified — a 6-DOF skiff
  *     and a 6-bogie land-train share nothing worth abstracting).
@@ -82,6 +86,8 @@ export type CameraMode = 'CHASE' | 'COCKPIT' | 'INSPECT' | 'ORBIT';
 export abstract class VehicleBase {
   readonly kind: VehicleKind;
   readonly object3D = new THREE.Group();
+  /** World-space group for deployed/sector elements that do not move with the hull. */
+  readonly worldGroup = new THREE.Group();
   readonly entity: Entity;
   protected world: World;
   protected env: VehicleEnvironment;
@@ -115,6 +121,17 @@ export abstract class VehicleBase {
     world.tag(this.entity, 'vehicle');
     world.tag(this.entity, `vehicle:${kind}`);
     this.object3D.name = `vehicle-${kind}`;
+    this.worldGroup.name = `vehicle-world-${kind}`;
+  }
+
+  /** Rebind the vehicle to a freshly constructed sector environment. */
+  setEnvironment(env: VehicleEnvironment): void {
+    this.env = env;
+  }
+
+  /** Authoritative world-space position of the vehicle for streaming and camera tracking. */
+  get worldPosition(): THREE.Vector3 {
+    return this.object3D.position;
   }
 
   /** Spawn/place the machine at a sector-local position with a heading. */
@@ -183,14 +200,16 @@ export abstract class VehicleBase {
     if (this.disposed) return;
     this.disposed = true;
     this.world.destroy(this.entity);
-    this.object3D.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (mesh.geometry) mesh.geometry.dispose();
-      const mat = mesh.material;
-      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-      else if (mat) (mat as THREE.Material).dispose();
-    });
-    this.object3D.clear();
+    for (const root of [this.object3D, this.worldGroup]) {
+      root.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) (mat as THREE.Material).dispose();
+      });
+      root.clear();
+    }
   }
 }
 

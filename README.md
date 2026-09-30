@@ -156,10 +156,10 @@ Everything below was run in this workspace:
 
 | Check | Result |
 |---|---|
-| `npm run verify` | green — typecheck, canon gate, 156 tests |
-| Canon gate | 47 files, 17,375 lines, 11 prohibitions, 8 required locks |
-| `npx vitest run` | 156 passed across 14 files |
-| `npm run build` | 2.40 kB html · 215.92 kB js · 484.12 kB three chunk · 17.82 kB css |
+| `npm run verify` | green — typecheck, canon gate, 161 tests |
+| Canon gate | 48 files, 18,600+ lines, 11 prohibitions, 8 required locks |
+| `npx vitest run` | 161 passed across 15 files |
+| `npm run build` | 2.40 kB html · 234.06 kB js · 484.12 kB three chunk · 21.41 kB css |
 | Production preview | every route HTTP 200, hashed assets as `text/javascript` |
 | Dev server | HTTP 200 on the preview host |
 | `node --check public/sw.js` | parses as plain JavaScript |
@@ -198,6 +198,13 @@ Two suites exist because the things they cover were asserted but unproven:
   an identical clean tree passes. A checker that always exited zero could not
   pass this suite. That test also found that the gate was not scanning
   `README.md` — the project's front door and its most canon-sensitive prose.
+- `tests/uplift.test.ts` verifies possessed-vehicle stepping during sector and
+  low-orbit gameplay, `worldGroup` separation from `object3D` across all four
+  machines (so deployed debris, tethers, tunnel shells, heat-exchanger rigs and
+  dropped sensors remain anchored in world coordinates), the Harmonic Phase-Lock
+  Polar Scope, the 3D-projected globe reticle callout, the Settlement & Module
+  Ledger, `varSense`-aware briefing forecast polarity, lock-reason banners, and
+  ECS/UI rebinding across `newWorld()`.
 
 ### What is *not* verified
 

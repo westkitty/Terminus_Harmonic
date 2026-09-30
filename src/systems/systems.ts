@@ -62,6 +62,11 @@ export class GlobalStateSystem implements System {
     private onTick?: (state: PlanetaryState) => void,
   ) {}
 
+  rebind(planetary: PlanetaryState): void {
+    this.planetary = planetary;
+    this.accumulator = 0;
+  }
+
   update(ctx: SystemContext): void {
     // Fixed-step so planetary evolution is deterministic regardless of frame rate.
     this.accumulator += ctx.dt;
@@ -94,6 +99,13 @@ export class WeatherSystem implements System {
     private planetary: PlanetaryState,
     private seed: number,
   ) {}
+
+  rebind(planetary: PlanetaryState, seed: number): void {
+    this.planetary = planetary;
+    this.seed = seed;
+    this.storms.length = 0;
+    this.nextId = 1;
+  }
 
   update(ctx: SystemContext): void {
     const p = this.planetary;
@@ -159,6 +171,11 @@ export class LogisticsSystem implements System {
     private planetary: PlanetaryState,
     private settlements: SettlementRuntime[],
   ) {}
+
+  rebind(planetary: PlanetaryState, settlements: SettlementRuntime[]): void {
+    this.planetary = planetary;
+    this.settlements = settlements;
+  }
 
   update(ctx: SystemContext): void {
     const p = this.planetary;
@@ -229,6 +246,23 @@ export class HarmonicSystem implements System {
     this.phases = spires.map((s) => s.phase);
     this.locks = spires.map((s) => (s.functional ? 0.85 : 0.1));
     this.recompute();
+  }
+
+  rebind(planetary: PlanetaryState, spires: SpireRecord[]): void {
+    this.planetary = planetary;
+    this.spires = spires;
+    this.phases.length = 0;
+    this.phases.push(...spires.map((s) => s.phase));
+    this.locks.length = 0;
+    this.locks.push(...spires.map((s) => (s.functional ? 0.85 : 0.1)));
+    this.pulseTimer = 0;
+    this.pulseEnergy = 0;
+    this.referencePhase = 0;
+    this.recompute();
+  }
+
+  get refPhase(): number {
+    return this.referencePhase;
   }
 
   private recompute(): void {
@@ -351,15 +385,16 @@ export class TerrainStreamingSystem implements System {
   loadedChunks = 0;
 
   constructor(
-    private target: TerrainStreamTarget | null,
+    private target: TerrainStreamTarget | null | (() => TerrainStreamTarget | null),
     private getPlayerPosition: () => THREE.Vector3,
     private quality: () => QualitySettings,
   ) {}
 
   update(_ctx: SystemContext): void {
-    if (!this.target) return;
+    const t = typeof this.target === 'function' ? this.target() : this.target;
+    if (!t) return;
     const p = this.getPlayerPosition();
-    this.target.update(p.x, p.z, this.quality().terrainBudget);
+    t.update(p.x, p.z, this.quality().terrainBudget);
   }
 }
 
@@ -378,6 +413,8 @@ export class VehiclePossessionSystem implements System {
     private bus: import('../core/events').EventBus,
     private input: import('../core/input').InputManager,
     private onCycleCamera: () => void,
+    private getScale?: () => Scale,
+    private onActiveTick?: (vehicle: VehicleBase, dt: number) => void,
   ) {}
 
   possess(vehicle: VehicleBase): void {
@@ -396,8 +433,14 @@ export class VehiclePossessionSystem implements System {
     return this.current;
   }
 
-  update(_ctx: SystemContext): void {
+  update(ctx: SystemContext): void {
     if (this.input.pressed('cameraCycle')) this.onCycleCamera();
+    if (!this.current) return;
+    const scale = this.getScale ? this.getScale() : 'SECTOR';
+    if (scale === 'SECTOR' || scale === 'ORBIT') {
+      this.current.update(ctx.dt);
+      this.onActiveTick?.(this.current, ctx.dt);
+    }
   }
 }
 
@@ -591,7 +634,13 @@ export class UISystem implements System {
     private getVehicle: () => VehicleBase | null,
     private getCrises: () => CrisisRuntime[],
     private getHarmonic: () => { coherence: number; functional: number; total: number; unlocked: boolean },
+    private getObjectiveLines?: () => { text: string; progress: number; done: boolean }[],
+    private getSelectedCrisisId?: () => string | null,
   ) {}
+
+  rebind(planetary: PlanetaryState): void {
+    this.planetary = planetary;
+  }
 
   update(ctx: SystemContext): void {
     const scale = this.getScale();
@@ -599,13 +648,15 @@ export class UISystem implements System {
     if (scale === 'SECTOR' || scale === 'ORBIT') {
       if (vehicle) {
         const model = vehicle.hud();
-        // Fill in objectives from the active crisis.
+        if (this.getObjectiveLines) {
+          model.objectives = this.getObjectiveLines();
+        }
         this.ui.setHud(model);
       }
     } else {
       this.ui.setHud(null);
       this.ui.updateMacro(this.planetary, performance.now());
-      this.ui.setCrises(this.getCrises(), null);
+      this.ui.setCrises(this.getCrises(), this.getSelectedCrisisId?.() ?? null);
     }
     const h = this.getHarmonic();
     this.ui.setHarmonicState(h.coherence, h.functional, h.total, h.unlocked);
@@ -626,6 +677,11 @@ export class SpireRuntimeSystem implements System {
     private spires: SpireRecord[],
     private harmonic: HarmonicSystem,
   ) {}
+
+  rebind(spires: SpireRecord[], harmonic: HarmonicSystem): void {
+    this.spires = spires;
+    this.harmonic = harmonic;
+  }
 
   update(ctx: SystemContext): void {
     for (const s of this.spires) {

@@ -91,6 +91,8 @@ export class OrbitalLayer {
   readonly group = new THREE.Group();
   private planetMaterial: THREE.ShaderMaterial;
   private planetGeometry: THREE.SphereGeometry;
+  private sun: THREE.DirectionalLight;
+  private hemi: THREE.HemisphereLight;
   private disposed = false;
 
   constructor(seed: number) {
@@ -110,6 +112,7 @@ export class OrbitalLayer {
     void fbm3;
     const planet = new THREE.Mesh(this.planetGeometry, this.planetMaterial);
     planet.name = 'planet-from-orbit';
+    planet.position.set(0, -PLANET_R - 420_000, 0);
     this.group.add(planet);
 
     // Orbital shell hint: a faint ring of wreckage-density, not a Blood Ring.
@@ -125,12 +128,22 @@ export class OrbitalLayer {
     });
     const belt = new THREE.Mesh(beltGeo, beltMat);
     belt.rotation.x = Math.PI / 2 + 0.22;
+    belt.position.set(0, -PLANET_R - 420_000, 0);
     belt.name = 'wreckage-density-belt';
     this.group.add(belt);
+
+    // Stellar directional light + planetshine fill so standard materials on the
+    // Orbital Skiff and derelict hulls read cleanly in low orbit.
+    this.sun = new THREE.DirectionalLight(0xffddb0, 2.2);
+    this.sun.position.set(3200, 1400, 1200);
+    this.group.add(this.sun);
+    this.hemi = new THREE.HemisphereLight(0x52657a, 0x261d16, 0.72);
+    this.group.add(this.hemi);
   }
 
   setSunDirection(dir: THREE.Vector3): void {
     (this.planetMaterial.uniforms.uSunDirection.value as THREE.Vector3).copy(dir).normalize();
+    this.sun.position.copy(dir).normalize().multiplyScalar(3600);
   }
 
   setToxicity(t: number): void {

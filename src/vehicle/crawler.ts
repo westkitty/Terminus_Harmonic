@@ -102,7 +102,11 @@ export class StrataCrawler extends VehicleBase {
     this.cutterHead = this.buildCutter();
     this.cutterRing = this.buildCutterRing();
     this.buildTunnelMesh();
-    this.object3D.add(this.exchangerGroup);
+    this.worldGroup.add(this.exchangerGroup);
+  }
+
+  override get worldPosition(): THREE.Vector3 {
+    return this.position;
   }
 
   // -- construction ---------------------------------------------------------
@@ -249,7 +253,7 @@ export class StrataCrawler extends VehicleBase {
     );
     this.tunnelMesh.frustumCulled = false;
     this.tunnelMesh.name = 'tunnel-shell';
-    this.object3D.add(this.tunnelMesh);
+    this.worldGroup.add(this.tunnelMesh);
   }
 
   /** Rebuild the tunnel shell geometry from the lattice. */
@@ -298,7 +302,13 @@ export class StrataCrawler extends VehicleBase {
     this.hullStress = 0;
     this.depth = 0;
     this.drilling = false;
+    this.installedExchangers = 0;
+    this.drillSeconds = 0;
     this.tunnelVersion = -1;
+    this.tunnelMesh.geometry.setDrawRange(0, 0);
+    for (const c of [...this.exchangerGroup.children]) {
+      this.exchangerGroup.remove(c);
+    }
     this.object3D.position.copy(this.position);
     this.object3D.rotation.y = headingRad;
   }
@@ -382,6 +392,8 @@ export class StrataCrawler extends VehicleBase {
       const carved = lattice.excavate(carve.x, carve.y, carve.z, CUTTER_RADIUS / lattice.cell);
       if (carved > 0) this.tunnelMeshDirty = true;
       lattice.addHeat(carve.x, carve.y, carve.z, 0.02);
+      this.drillSeconds += step;
+      if (this.drillSeconds >= 2.5) this.fireObjective('survey');
       this.fireObjective('bore');
     } else {
       this.cutterSpin = damp(this.cutterSpin, 0, 3, step);
@@ -450,13 +462,41 @@ export class StrataCrawler extends VehicleBase {
     const deployPos = this._v1.set(pos.x, pos.y - 1.0, pos.z);
     lattice.addHeat(deployPos.x, deployPos.y, deployPos.z, -0.55);
     this.installedExchangers++;
+
+    // Anchor a physical heat-exchanger rig into the excavated rock in world space.
+    const rig = new THREE.Group();
+    const core = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.65, 0.85, 3.2, 10),
+      new THREE.MeshStandardMaterial({ color: PALETTE.steel, metalness: 0.72, roughness: 0.48 }),
+    );
+    core.position.y = 1.6;
+    rig.add(core);
+    for (let i = 0; i < 3; i++) {
+      const fin = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.25, 1.25, 0.16, 12),
+        new THREE.MeshStandardMaterial({ color: PALETTE.darkRust, metalness: 0.65, roughness: 0.55 }),
+      );
+      fin.position.y = 0.9 + i * 0.85;
+      rig.add(fin);
+    }
+    const beacon = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.28, 0.5),
+      new THREE.MeshBasicMaterial({ color: PALETTE.azureTrace, toneMapped: false }),
+    );
+    beacon.position.y = 3.35;
+    rig.add(beacon);
+    rig.position.copy(deployPos);
+    this.exchangerGroup.add(rig);
+
     this.env.blip(pos.x, pos.y, pos.z, 300 + this.installedExchangers * 60, 0.22);
     this.env.impact(0.4, 0.25);
     this.fireObjective('exchanger');
+    this.fireObjective('survey');
   }
 
-  /** Coolant purge — dumps heat fast but consumes the reserve. */
+  /** Coolant purge + strata seal behind the crawler. */
   secondary(): void {
+    this.sealBehind();
     if (this.coolant < 0.12) return;
     this.coolant = clamp01(this.coolant - 0.35);
     this.cutterTemp = clamp01(this.cutterTemp - 0.28);

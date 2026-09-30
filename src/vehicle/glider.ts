@@ -102,6 +102,7 @@ export class AtmosphericGlider extends VehicleBase {
   readonly sensorCapacity = 8;
   private deployedSensors = 0;
   private sensorGroup = new THREE.Group();
+  private thermalGroup = new THREE.Group();
   private mappedCells = 0;
 
   private _v1 = new THREE.Vector3();
@@ -119,7 +120,12 @@ export class AtmosphericGlider extends VehicleBase {
     super(world, env, 'GLIDER');
     this.buildAirframe();
     this.buildSensors();
-    this.object3D.add(this.sensorGroup);
+    this.worldGroup.add(this.sensorGroup);
+    this.worldGroup.add(this.thermalGroup);
+  }
+
+  override get worldPosition(): THREE.Vector3 {
+    return this.position;
   }
 
   // -- construction ---------------------------------------------------------
@@ -205,18 +211,41 @@ export class AtmosphericGlider extends VehicleBase {
   /** Seed deterministic thermals across the sector. */
   seedThermals(seed: number, count = 26, strength = 4.5): void {
     this.thermals.length = 0;
+    for (const c of [...this.thermalGroup.children]) {
+      this.thermalGroup.remove(c);
+    }
     let s = seed >>> 0;
     const rnd = (): number => {
       s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
       return s / 4294967296;
     };
+    const colGeo = new THREE.CylinderGeometry(1, 1.25, 420, 14, 1, true);
     for (let i = 0; i < count; i++) {
+      const x = (rnd() - 0.5) * 3600;
+      const z = (rnd() - 0.5) * 3600;
+      const radius = 120 + rnd() * 320;
+      const str = strength * (0.45 + rnd() * 0.9);
       this.thermals.push({
-        x: (rnd() - 0.5) * 3600,
-        z: (rnd() - 0.5) * 3600,
-        radius: 120 + rnd() * 320,
-        strength: strength * (0.45 + rnd() * 0.9),
+        x,
+        z,
+        radius,
+        strength: str,
       });
+      const gy = this.env.field.elevation(x, z);
+      const col = new THREE.Mesh(
+        colGeo,
+        new THREE.MeshBasicMaterial({
+          color: 0xd09a48,
+          transparent: true,
+          opacity: 0.065,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      );
+      col.scale.set(radius * 0.42, 1, radius * 0.42);
+      col.position.set(x, gy + 220, z);
+      this.thermalGroup.add(col);
     }
   }
 

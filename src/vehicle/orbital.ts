@@ -129,7 +129,11 @@ export class OrbitalSkiff extends VehicleBase {
     this.buildHull();
     this.buildTetherLines();
     this.targetRing = this.buildTargetRing();
-    this.object3D.add(this.targetRing);
+    this.worldGroup.add(this.targetRing);
+  }
+
+  override get worldPosition(): THREE.Vector3 {
+    return this.position;
   }
 
   // -- construction ---------------------------------------------------------
@@ -206,7 +210,7 @@ export class OrbitalSkiff extends VehicleBase {
     );
     this.tetherLines.frustumCulled = false;
     this.tetherLines.name = 'tether-lines';
-    this.object3D.add(this.tetherLines);
+    this.worldGroup.add(this.tetherLines);
   }
 
   private buildTargetRing(): THREE.Mesh {
@@ -284,7 +288,7 @@ export class OrbitalSkiff extends VehicleBase {
       this.debris.push(debris);
       this.world.tag(debris.entity, 'debris');
     }
-    this.object3D.add(this.debrisGroup);
+    this.worldGroup.add(this.debrisGroup);
   }
 
   private clearDebris(): void {
@@ -306,6 +310,10 @@ export class OrbitalSkiff extends VehicleBase {
     this.rcsFuel = RCS_FUEL_CAPACITY;
     this.hullIntegrity = 1;
     this.power = 1;
+    this.tethers.length = 0;
+    this.corridorDensity = 1;
+    this.capturedCount = 0;
+    this.securedCount = 0;
     this.object3D.position.copy(this.position);
     this.object3D.quaternion.copy(this.quaternion);
   }
@@ -562,6 +570,7 @@ export class OrbitalSkiff extends VehicleBase {
     this.target.tethered = true;
     this.env.blip(this.position.x, this.position.y, this.position.z, 520, 0.16);
     this.env.impact(0.25, 0.8);
+    this.fireObjective('diagnose');
   }
 
   /** Release the tether on the current target. */
@@ -588,6 +597,10 @@ export class OrbitalSkiff extends VehicleBase {
   interact(): void {
     const t = this.tethers.find((x) => x.debris === this.target) ?? this.tethers[0];
     if (!t) {
+      if (this.target && !this.target.tethered) {
+        this.primary();
+        return;
+      }
       this.env.blip(this.position.x, this.position.y, this.position.z, 200, 0.08);
       return;
     }
@@ -596,7 +609,7 @@ export class OrbitalSkiff extends VehicleBase {
     const dist = d.position.distanceTo(this.position);
     // Must be close and slow relative to the skiff.
     const relSpeed = d.velocity.distanceTo(this.velocity);
-    if (dist > 220 || relSpeed > 2.5) {
+    if (dist > 320 || relSpeed > 4.5) {
       this.env.blip(this.position.x, this.position.y, this.position.z, 190, 0.08);
       return;
     }
@@ -610,6 +623,7 @@ export class OrbitalSkiff extends VehicleBase {
     this.env.impact(0.45, 0.35);
     this.env.blip(this.position.x, this.position.y, this.position.z, 880, 0.2);
     this.fireObjective('capture');
+    this.fireObjective('correct');
   }
 
   // -- targeting ------------------------------------------------------------

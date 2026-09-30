@@ -1322,3 +1322,267 @@ input:focus-visible,
   outline: 2px solid var(--ochre);
   outline-offset: 1px;
 }
+
+/* --- Harmonic Phase-Lock Polar Instrument & Spire Inspector ------------- */
+
+#harmonic-scope {
+  width: min(304px, 42vw);
+  margin-top: 8px;
+}
+
+.harmonic-scope-grid {
+  display: grid;
+  grid-template-columns: 118px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+.harmonic-polar-wrap {
+  width: 118px;
+  height: 118px;
+  position: relative;
+  border: 1px solid var(--line);
+  background: radial-gradient(circle at 50% 50%, rgba(47, 159, 208, 0.1) 0%, rgba(12, 14, 16, 0.92) 74%);
+}
+
+#harmonic-polar-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.harmonic-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+}
+
+.harmonic-stat-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding-bottom: 2px;
+}
+
+.harmonic-stat-row b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.harmonic-stat-row b.azure {
+  color: var(--azure);
+}
+
+#spire-detail {
+  margin-top: 2px;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  background: rgba(16, 20, 24, 0.72);
+  color: var(--text-dim);
+  line-height: 1.38;
+}
+
+#spire-detail .spire-name {
+  color: var(--azure);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#spire-ping-btn {
+  padding: 2px 6px;
+  font-size: 0.52rem;
+  letter-spacing: 0.1em;
+}
+
+/* --- 3D-Projected Globe Reticle Callout --------------------------------- */
+
+#globe-reticle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 14;
+  pointer-events: none;
+  display: none;
+  transform: translate(-50%, -100%);
+  font-family: var(--font-mono);
+}
+
+#globe-reticle.visible {
+  display: block;
+}
+
+.reticle-card {
+  pointer-events: auto;
+  min-width: 176px;
+  max-width: 240px;
+  background: rgba(12, 14, 17, 0.9);
+  border: 1px solid var(--ochre);
+  padding: 6px 8px;
+  margin-bottom: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65);
+}
+
+.reticle-card.spire {
+  border-color: var(--azure);
+}
+
+.reticle-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.62rem;
+  color: var(--amber);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.reticle-card.spire .reticle-top {
+  color: var(--azure);
+}
+
+.reticle-sub {
+  font-size: 0.54rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.reticle-actions {
+  margin-top: 5px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.reticle-actions .btn {
+  padding: 3px 8px;
+  font-size: 0.54rem;
+}
+
+/* --- Sector Command Bar & Vehicle Control Strip ------------------------- */
+
+#sector-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+  padding: 6px 8px;
+}
+
+.sector-cam-badge {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+  padding: 4px 7px;
+  border: 1px solid var(--line-bright);
+  background: rgba(20, 22, 25, 0.85);
+}
+
+#sector-bar .btn {
+  padding: 5px 10px;
+  font-size: 0.58rem;
+}
+
+#hud-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  max-width: 420px;
+  justify-content: flex-end;
+}
+
+.hud-ctrl-chip {
+  font-family: var(--font-mono);
+  font-size: 0.53rem;
+  padding: 3px 6px;
+  background: rgba(14, 16, 19, 0.84);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+
+.hud-ctrl-chip kbd {
+  color: var(--amber);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+/* --- Briefing Lock Banner & Settlement Ledger --------------------------- */
+
+#briefing-lock-reason {
+  display: none;
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  background: rgba(208, 90, 42, 0.12);
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+}
+
+#briefing-lock-reason.visible {
+  display: block;
+}
+
+#settlement-ledger {
+  border-top: 1px solid var(--line);
+  padding: 6px 10px 8px;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+}
+
+.ledger-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-faint);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.settlement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 3px 8px;
+}
+
+.settlement-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.settlement-row b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+#module-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 5px;
+}
+
+.module-tag {
+  padding: 1px 5px;
+  border: 1px solid var(--line-bright);
+  color: var(--amber);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+

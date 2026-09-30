@@ -26,12 +26,13 @@ import {
   varUnit,
   type PlanetaryVar,
 } from '../state/planetary';
-import { DOMAIN_LABEL, type CrisisNodeDef } from '../state/world';
+import { ACOUSTIC_SPIRES, DOMAIN_LABEL, type CrisisNodeDef } from '../state/world';
 import type { CrisisRuntime } from '../game/crisis';
 import type { HudModel } from '../vehicle/base';
 import { ACTION_LABELS, type ActionName } from '../core/input';
-import type { SettingsRecord } from '../state/save';
+import type { SettingsRecord, SpireRecord } from '../state/save';
 import type { QualityTier } from '../core/perf';
+import type { SettlementRuntime } from '../systems/systems';
 
 export interface BriefingData {
   node: CrisisNodeDef;
@@ -58,6 +59,7 @@ export interface UIDependencies {
   onImport: (text: string) => void;
   onNewWorld: () => void;
   onCycleCamera: () => void;
+  onPingSpire?: (spireId: number) => void;
 }
 
 type Listener = () => void;
@@ -87,7 +89,13 @@ export class UIController {
   private disposers: Listener[] = [];
   private briefingNodeId: string | null = null;
   private selectedNodeId: string | null = null;
+  private selectedSpireId = 0;
   private rebindingAction: ActionName | null = null;
+
+  /** Update the planetary state reference when a new world or save is loaded. */
+  setPlanetary(planetary: PlanetaryState): void {
+    this.deps.planetary = planetary;
+  }
 
   /** Node currently highlighted on the globe. */
   get highlightedNode(): string | null {
@@ -155,11 +163,52 @@ export class UIController {
         </div>
       </div>
       <div class="macro-row" style="align-items:flex-end">
-        <div class="macro-block panel" id="crisis-list">
-          <div class="panel-title"><span>Crisis Nodes</span><span id="crisis-count"></span></div>
-          <div id="crisis-items"></div>
+        <div class="macro-block">
+          <div class="panel" id="harmonic-scope">
+            <div class="panel-title"><span>Harmonic Lattice</span><span id="harmonic-order-pct">0% lock</span></div>
+            <div class="harmonic-scope-grid">
+              <div class="harmonic-polar-wrap">
+                <svg id="harmonic-polar-svg" viewBox="-60 -60 120 120" aria-label="Harmonic Phase-Lock Polar Scope">
+                  <circle cx="0" cy="0" r="48" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="0.8" stroke-dasharray="2 2"/>
+                  <circle cx="0" cy="0" r="32" fill="none" stroke="rgba(47,159,208,0.2)" stroke-width="0.8"/>
+                  <circle cx="0" cy="0" r="16" fill="none" stroke="rgba(47,159,208,0.34)" stroke-width="0.8"/>
+                  <line x1="-52" y1="0" x2="52" y2="0" stroke="rgba(255,255,255,0.07)" stroke-width="0.6"/>
+                  <line x1="0" y1="-52" x2="0" y2="52" stroke="rgba(255,255,255,0.07)" stroke-width="0.6"/>
+                  <line id="harmonic-ref-needle" x1="0" y1="0" x2="0" y2="-48" stroke="#4fc4ef" stroke-width="1.3" stroke-opacity="0.75"/>
+                  <g id="harmonic-spire-dots"></g>
+                  <circle cx="0" cy="0" r="2.2" fill="#4fc4ef"/>
+                </svg>
+              </div>
+              <div class="harmonic-stats">
+                <div class="harmonic-stat-row"><span>Coverage</span><b id="harmonic-cov-val">5/12</b></div>
+                <div class="harmonic-stat-row"><span>Phase Agreement</span><b class="azure" id="harmonic-ord-val">0%</b></div>
+                <div id="spire-detail">
+                  <div class="spire-name"><span id="spire-name-lbl">Spire I · Verdigris</span><button class="btn" id="spire-ping-btn" type="button">Ping</button></div>
+                  <div id="spire-meta-lbl">110 Hz · Δ0° · online</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="panel" id="crisis-list" style="margin-top:8px">
+            <div class="panel-title"><span>Crisis Nodes</span><span id="crisis-count"></span></div>
+            <div id="crisis-items"></div>
+            <div id="settlement-ledger">
+              <div class="ledger-head"><span>Settlement Viability</span><span id="ledger-avg">--</span></div>
+              <div class="settlement-grid" id="settlement-grid"></div>
+              <div id="module-tags"></div>
+            </div>
+          </div>
         </div>
         <div id="macro-toolbar"></div>
+      </div>
+      <div id="globe-reticle" aria-live="polite">
+        <div class="reticle-card" id="reticle-card">
+          <div class="reticle-top"><span id="reticle-title"></span><span id="reticle-tag"></span></div>
+          <div class="reticle-sub" id="reticle-sub"></div>
+          <div class="reticle-actions">
+            <button class="btn primary" id="reticle-action" type="button">Inspect</button>
+          </div>
+        </div>
       </div>
     `;
     root.appendChild(macro);
@@ -174,6 +223,23 @@ export class UIController {
     this.el.crisisItems = macro.querySelector('#crisis-items') as HTMLElement;
     this.el.crisisCount = macro.querySelector('#crisis-count') as HTMLElement;
     this.el.macroToolbar = macro.querySelector('#macro-toolbar') as HTMLElement;
+    this.el.harmonicOrderPct = macro.querySelector('#harmonic-order-pct') as HTMLElement;
+    this.el.harmonicRefNeedle = macro.querySelector('#harmonic-ref-needle') as HTMLElement;
+    this.el.harmonicSpireDots = macro.querySelector('#harmonic-spire-dots') as HTMLElement;
+    this.el.harmonicCovVal = macro.querySelector('#harmonic-cov-val') as HTMLElement;
+    this.el.harmonicOrdVal = macro.querySelector('#harmonic-ord-val') as HTMLElement;
+    this.el.spireNameLbl = macro.querySelector('#spire-name-lbl') as HTMLElement;
+    this.el.spireMetaLbl = macro.querySelector('#spire-meta-lbl') as HTMLElement;
+    this.el.spirePingBtn = macro.querySelector('#spire-ping-btn') as HTMLButtonElement;
+    this.el.settlementGrid = macro.querySelector('#settlement-grid') as HTMLElement;
+    this.el.ledgerAvg = macro.querySelector('#ledger-avg') as HTMLElement;
+    this.el.moduleTags = macro.querySelector('#module-tags') as HTMLElement;
+    this.el.globeReticle = macro.querySelector('#globe-reticle') as HTMLElement;
+    this.el.reticleCard = macro.querySelector('#reticle-card') as HTMLElement;
+    this.el.reticleTitle = macro.querySelector('#reticle-title') as HTMLElement;
+    this.el.reticleTag = macro.querySelector('#reticle-tag') as HTMLElement;
+    this.el.reticleSub = macro.querySelector('#reticle-sub') as HTMLElement;
+    this.el.reticleAction = macro.querySelector('#reticle-action') as HTMLButtonElement;
 
     // Overlay buttons.
     for (const mode of OVERLAY_MODES) {
@@ -210,6 +276,12 @@ export class UIController {
             <div class="name" id="hud-name">--</div>
             <div class="sub" id="hud-sub"></div>
           </div>
+          <div id="sector-bar">
+            <span class="sector-cam-badge" id="hud-cam-mode">CAM · CHASE</span>
+            <button class="btn" id="hud-cam-btn" type="button" title="Cycle Camera [V]">Camera [V]</button>
+            <button class="btn" id="hud-ascend-btn" type="button" title="Return to Command Lattice [ESC]">Lattice [ESC]</button>
+            <button class="btn" id="hud-settings-btn" type="button" title="Open Configuration">Config</button>
+          </div>
         </div>
         <div class="panel" id="objectives">
           <div class="panel-title"><span>Engineering Tasks</span><span id="obj-count"></span></div>
@@ -221,8 +293,9 @@ export class UIController {
           <div id="gauges"></div>
           <div id="hud-readout"></div>
         </div>
-        <div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
           <div id="hud-flags"></div>
+          <div id="hud-controls"></div>
         </div>
       </div>
     `;
@@ -235,6 +308,11 @@ export class UIController {
     this.el.readout = hud.querySelector('#hud-readout') as HTMLElement;
     this.el.objBody = hud.querySelector('#obj-body') as HTMLElement;
     this.el.objCount = hud.querySelector('#obj-count') as HTMLElement;
+    this.el.hudCamMode = hud.querySelector('#hud-cam-mode') as HTMLElement;
+    this.el.hudCamBtn = hud.querySelector('#hud-cam-btn') as HTMLButtonElement;
+    this.el.hudAscendBtn = hud.querySelector('#hud-ascend-btn') as HTMLButtonElement;
+    this.el.hudSettingsBtn = hud.querySelector('#hud-settings-btn') as HTMLButtonElement;
+    this.el.hudControls = hud.querySelector('#hud-controls') as HTMLElement;
 
     // --- briefing modal ---
     const brief = document.createElement('div');
@@ -252,6 +330,7 @@ export class UIController {
           <button class="btn" id="briefing-close">Close</button>
         </header>
         <div class="body">
+          <div id="briefing-lock-reason" role="status"></div>
           <p class="brief" id="briefing-brief"></p>
           <h3>Engineering Objectives</h3>
           <ul class="obj-list" id="briefing-objectives"></ul>
@@ -270,6 +349,7 @@ export class UIController {
     this.el.briefing = brief;
     this.el.briefTitle = brief.querySelector('#briefing-title') as HTMLElement;
     this.el.briefDomain = brief.querySelector('#briefing-domain') as HTMLElement;
+    this.el.briefLockReason = brief.querySelector('#briefing-lock-reason') as HTMLElement;
     this.el.briefBrief = brief.querySelector('#briefing-brief') as HTMLElement;
     this.el.briefObjectives = brief.querySelector('#briefing-objectives') as HTMLElement;
     this.el.briefForecast = brief.querySelector('#briefing-forecast') as HTMLElement;
@@ -573,6 +653,20 @@ export class UIController {
       mk('Save', () => d.onSave()),
       mk('Load', () => d.onLoad()),
     );
+
+    // Sector HUD command bar + spire ping wiring.
+    this.el.hudCamBtn?.addEventListener('click', () => d.onCycleCamera());
+    this.el.hudAscendBtn?.addEventListener('click', () => d.onAscend());
+    this.el.hudSettingsBtn?.addEventListener('click', () => this.openSettings());
+    this.el.spirePingBtn?.addEventListener('click', () => {
+      d.onPingSpire?.(this.selectedSpireId);
+    });
+    this.el.reticleAction?.addEventListener('click', () => {
+      const nodeId = this.el.reticleAction.dataset.nodeId;
+      const spireId = this.el.reticleAction.dataset.spireId;
+      if (nodeId) d.onSelectNode(nodeId);
+      else if (spireId !== undefined) d.onPingSpire?.(Number(spireId));
+    });
 
     const close = this.el.settings.querySelector('#settings-close') as HTMLButtonElement;
     close.addEventListener('click', () => this.closeSettings());
@@ -949,26 +1043,41 @@ export class UIController {
     this.el.briefDomain.textContent = `${DOMAIN_LABEL[node.domain]} · vehicle ${node.vehicle.replace(/_/g, ' ').toLowerCase()}`;
     this.el.briefBrief.textContent = node.brief;
 
+    const canStart = data.canStart && (data.status === 'AVAILABLE' || data.status === 'ACTIVE');
+    if (this.el.briefLockReason) {
+      if (!canStart && data.lockReason) {
+        this.el.briefLockReason.textContent = `LOCKED · ${data.lockReason}`;
+        this.el.briefLockReason.classList.add('visible');
+      } else {
+        this.el.briefLockReason.textContent = '';
+        this.el.briefLockReason.classList.remove('visible');
+      }
+    }
+
     this.el.briefObjectives.innerHTML = '';
     for (const o of data.objectives) {
       const li = document.createElement('li');
-      li.textContent = o.text;
+      const pct = Math.round((o.progress ?? 0) * 100);
+      li.textContent = pct > 0 && !o.done ? `${o.text} (${pct}%)` : o.text;
       if (o.done) li.style.color = 'var(--good)';
       this.el.briefObjectives.appendChild(li);
     }
 
     this.el.briefForecast.innerHTML = '';
-    const rows: { label: string; delta: number }[] = [];
+    const rows: { key: PlanetaryVar; label: string; delta: number }[] = [];
     for (const k of Object.keys(node.resolution) as PlanetaryVar[]) {
       const base = this.deps.planetary.vars[k];
       const next = data.forecast.vars[k];
-      rows.push({ label: varLabel(k), delta: next - base });
+      rows.push({ key: k, label: varLabel(k), delta: next - base });
     }
     rows.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
     for (const r of rows) {
       const d = document.createElement('div');
       d.className = 'row';
-      const cls = r.delta > 0.001 ? 'up' : r.delta < -0.001 ? 'down' : 'neutral';
+      // Evaluate whether the delta improves planetary health according to varSense.
+      const polarity = varSense(r.key) === 'good' ? 1 : -1;
+      const improvement = r.delta * polarity;
+      const cls = improvement > 0.001 ? 'up' : improvement < -0.001 ? 'down' : 'neutral';
       const sign = r.delta > 0 ? '+' : '';
       d.innerHTML = `<span class="lbl">${r.label}</span><span class="delta ${cls}">${sign}${(r.delta * 100).toFixed(1)}%</span>`;
       this.el.briefForecast.appendChild(d);
@@ -989,13 +1098,13 @@ export class UIController {
       this.el.briefArchive.appendChild(d);
     }
 
-    const canStart = data.status === 'AVAILABLE' || data.status === 'ACTIVE';
     (this.el.briefDescend as HTMLButtonElement).disabled = !canStart;
     this.el.briefDescend.textContent = data.status === 'RESOLVED' ? 'Stabilised' : data.status === 'ACTIVE' ? 'Resume Descent' : 'Descend';
     this.el.briefAbort.style.display = data.status === 'ACTIVE' ? '' : 'none';
 
     this.el.briefing.classList.add('open');
-    this.el.briefDescend.focus();
+    if (canStart) this.el.briefDescend.focus();
+    else this.el.briefClose.focus();
   }
 
   closeBriefing(): void {
@@ -1088,6 +1197,175 @@ export class UIController {
     this.selectedNodeId = id;
     for (const [cid, row] of this.crisisRows) {
       row.btn.style.background = cid === id ? 'rgba(224,176,96,0.14)' : '';
+    }
+  }
+
+  selectSpire(spireId: number): void {
+    this.selectedSpireId = spireId;
+  }
+
+  /** Render live camera mode and machine control chips on the sector HUD. */
+  setVehicleTelemetry(cameraMode: string, controls: { label: string; detail: string }[]): void {
+    if (this.el.hudCamMode) {
+      const txt = `CAM · ${cameraMode}`;
+      if (this.el.hudCamMode.textContent !== txt) this.el.hudCamMode.textContent = txt;
+    }
+    if (this.el.hudControls) {
+      const sig = controls.map((c) => `${c.label}:${c.detail}`).join('|');
+      if (this.el.hudControls.dataset.sig !== sig) {
+        this.el.hudControls.dataset.sig = sig;
+        this.el.hudControls.innerHTML = '';
+        for (const c of controls) {
+          const chip = document.createElement('span');
+          chip.className = 'hud-ctrl-chip';
+          chip.innerHTML = `<kbd>${c.label}</kbd>${c.detail}`;
+          this.el.hudControls.appendChild(chip);
+        }
+      }
+    }
+  }
+
+  /** Update the polar phase-lock instrument and selected spire telemetry. */
+  updateHarmonicScope(
+    spires: SpireRecord[],
+    phases: number[],
+    locks: number[],
+    refPhase: number,
+    coverage: number,
+    phaseOrder: number,
+    selectedSpireId = this.selectedSpireId,
+  ): void {
+    this.selectedSpireId = selectedSpireId;
+    const functionalCount = spires.filter((s) => s.functional).length;
+    if (this.el.harmonicOrderPct) {
+      this.el.harmonicOrderPct.textContent = `${Math.round(coverage * phaseOrder * 100)}% lock`;
+    }
+    if (this.el.harmonicCovVal) {
+      this.el.harmonicCovVal.textContent = `${functionalCount}/${spires.length}`;
+    }
+    if (this.el.harmonicOrdVal) {
+      this.el.harmonicOrdVal.textContent = `${Math.round(phaseOrder * 100)}%`;
+    }
+    if (this.el.harmonicRefNeedle) {
+      const rad = ((refPhase - 90) * Math.PI) / 180;
+      this.el.harmonicRefNeedle.setAttribute('x2', (Math.cos(rad) * 48).toFixed(2));
+      this.el.harmonicRefNeedle.setAttribute('y2', (Math.sin(rad) * 48).toFixed(2));
+    }
+    if (this.el.harmonicSpireDots) {
+      const ns = 'http://www.w3.org/2000/svg';
+      while (this.el.harmonicSpireDots.children.length < spires.length) {
+        const idx = this.el.harmonicSpireDots.children.length;
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('r', '3.1');
+        c.style.cursor = 'pointer';
+        c.addEventListener('click', () => {
+          this.selectedSpireId = idx;
+          this.deps.onPingSpire?.(idx);
+        });
+        this.el.harmonicSpireDots.appendChild(c);
+      }
+      for (let i = 0; i < spires.length; i++) {
+        const s = spires[i];
+        const c = this.el.harmonicSpireDots.children[i] as SVGCircleElement;
+        const ph = phases[i] ?? s.phase;
+        const lk = locks[i] ?? (s.functional ? 0.8 : 0.1);
+        const r = s.functional ? 44 - lk * 28 : 48;
+        const rad = ((ph - 90) * Math.PI) / 180;
+        c.setAttribute('cx', (Math.cos(rad) * r).toFixed(2));
+        c.setAttribute('cy', (Math.sin(rad) * r).toFixed(2));
+        c.setAttribute('fill', s.functional ? '#4fc4ef' : '#4a555d');
+        c.setAttribute('stroke', i === this.selectedSpireId ? '#f0c068' : 'none');
+        c.setAttribute('stroke-width', i === this.selectedSpireId ? '1.4' : '0');
+        c.setAttribute('r', i === this.selectedSpireId ? '4.2' : s.functional ? '3.1' : '2.3');
+      }
+    }
+    const sel = spires[this.selectedSpireId] ?? spires[0];
+    const def = ACOUSTIC_SPIRES[sel?.id ?? 0];
+    if (sel && def && this.el.spireNameLbl && this.el.spireMetaLbl) {
+      this.el.spireNameLbl.textContent = def.name;
+      const ph = phases[sel.id] ?? sel.phase;
+      let diff = ((ph - refPhase) % 360 + 540) % 360 - 180;
+      if (!Number.isFinite(diff)) diff = 0;
+      const status = sel.functional ? `Δ${Math.abs(diff).toFixed(0)}° · ${sel.repairs} sync` : 'offline · uncalibrated';
+      this.el.spireMetaLbl.textContent = `${def.baseFreq} Hz · ${status}`;
+    }
+  }
+
+  /** Update the settlement viability ledger and unlocked domain modules. */
+  updateLedger(settlements: SettlementRuntime[], unlockedModules: string[]): void {
+    if (this.el.settlementGrid) {
+      if (this.el.settlementGrid.children.length !== settlements.length) {
+        this.el.settlementGrid.innerHTML = '';
+        for (const s of settlements) {
+          const r = document.createElement('div');
+          r.className = 'settlement-row';
+          r.dataset.id = s.id;
+          r.innerHTML = `<span>${s.name.split(' ')[0]}</span><b>--</b>`;
+          this.el.settlementGrid.appendChild(r);
+        }
+      }
+      let sum = 0;
+      for (let i = 0; i < settlements.length; i++) {
+        const s = settlements[i];
+        sum += s.viability;
+        const b = this.el.settlementGrid.children[i]?.querySelector('b');
+        if (b) b.textContent = `${Math.round(s.viability * 100)}%`;
+      }
+      if (this.el.ledgerAvg && settlements.length > 0) {
+        this.el.ledgerAvg.textContent = `avg ${Math.round((sum / settlements.length) * 100)}%`;
+      }
+    }
+    if (this.el.moduleTags) {
+      const sig = unlockedModules.join('|');
+      if (this.el.moduleTags.dataset.sig !== sig) {
+        this.el.moduleTags.dataset.sig = sig;
+        this.el.moduleTags.innerHTML = '';
+        for (const m of unlockedModules) {
+          const t = document.createElement('span');
+          t.className = 'module-tag';
+          t.textContent = m;
+          this.el.moduleTags.appendChild(t);
+        }
+      }
+    }
+  }
+
+  /** Position and populate the 3D-projected floating reticle callout on the globe. */
+  updateGlobeReticle(
+    reticle: {
+      visible: boolean;
+      x: number;
+      y: number;
+      kind: 'node' | 'spire';
+      title: string;
+      tag: string;
+      sub: string;
+      actionLabel: string;
+      nodeId?: string;
+      spireId?: number;
+    } | null,
+  ): void {
+    if (!this.el.globeReticle) return;
+    if (!reticle || !reticle.visible) {
+      this.el.globeReticle.classList.remove('visible');
+      return;
+    }
+    this.el.globeReticle.classList.add('visible');
+    this.el.globeReticle.style.left = `${reticle.x.toFixed(1)}px`;
+    this.el.globeReticle.style.top = `${reticle.y.toFixed(1)}px`;
+    this.el.reticleCard.classList.toggle('spire', reticle.kind === 'spire');
+    if (this.el.reticleTitle.textContent !== reticle.title) this.el.reticleTitle.textContent = reticle.title;
+    if (this.el.reticleTag.textContent !== reticle.tag) this.el.reticleTag.textContent = reticle.tag;
+    if (this.el.reticleSub.textContent !== reticle.sub) this.el.reticleSub.textContent = reticle.sub;
+    if (this.el.reticleAction.textContent !== reticle.actionLabel) {
+      this.el.reticleAction.textContent = reticle.actionLabel;
+    }
+    if (reticle.nodeId) {
+      this.el.reticleAction.dataset.nodeId = reticle.nodeId;
+      delete this.el.reticleAction.dataset.spireId;
+    } else if (reticle.spireId !== undefined) {
+      this.el.reticleAction.dataset.spireId = String(reticle.spireId);
+      delete this.el.reticleAction.dataset.nodeId;
     }
   }
 

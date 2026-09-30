@@ -887,7 +887,6 @@ export class CommandGlobe {
   /** Rotate debris slightly to convey orbital motion without real simulation. */
   update(dt: number): void {
     this.debrisGroup.rotation.y += dt * 0.012;
-    this.spireGroup.rotation.y = this.debrisGroup.rotation.y * 0.6;
     if (this.overlayDirty) this.paintOverlay();
   }
 
@@ -902,14 +901,30 @@ export class CommandGlobe {
     };
   }
 
-  /** Node screen position for HTML label anchoring. */
+  /** Node screen position for HTML label anchoring (true when on visible front hemisphere). */
   projectNode(id: string, camera: THREE.Camera, out: THREE.Vector3): boolean {
     const m = this.markerMeshes.find((x) => x.userData.nodeId === id);
     if (!m) return false;
     out.copy(m.position);
     this.planetMesh.localToWorld(out);
+    const camDir = camera.position.clone().normalize();
+    const surfDir = out.clone().normalize();
+    if (surfDir.dot(camDir) < 0.08) return false;
     out.project(camera);
-    return out.z < 1;
+    return out.z > -1 && out.z < 1;
+  }
+
+  /** Spire screen position for HTML label anchoring (true when on visible front hemisphere). */
+  projectSpire(id: number, camera: THREE.Camera, out: THREE.Vector3): boolean {
+    const m = this.spireMeshes.find((x) => x.userData.spireId === id);
+    if (!m) return false;
+    out.copy(m.position);
+    this.planetMesh.localToWorld(out);
+    const camDir = camera.position.clone().normalize();
+    const surfDir = out.clone().normalize();
+    if (surfDir.dot(camDir) < 0.08) return false;
+    out.project(camera);
+    return out.z > -1 && out.z < 1;
   }
 
   get markerCount(): number {

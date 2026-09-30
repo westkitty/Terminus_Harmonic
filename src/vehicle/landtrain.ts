@@ -109,6 +109,7 @@ export class LandTrain extends VehicleBase {
     return BOGIE_COUNT * CONTACTS_PER_BOGIE * WHEEL_CONTACT_AREA;
   }
   private zoneGroup = new THREE.Group();
+  private cargoMeshes: THREE.Object3D[] = [];
 
   private smoothEngine = 0;
   private smoothRumble = 0;
@@ -121,7 +122,11 @@ export class LandTrain extends VehicleBase {
     super(world, env, 'LAND_TRAIN');
     this.buildConsist();
     this.buildBogies();
-    this.object3D.add(this.zoneGroup);
+    this.worldGroup.add(this.zoneGroup);
+  }
+
+  override get worldPosition(): THREE.Vector3 {
+    return this.segments[0].position;
   }
 
   private buildConsist(): void {
@@ -165,6 +170,25 @@ export class LandTrain extends VehicleBase {
       const deck = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.2, 10.4), steelMat);
       deck.position.y = 3.4;
       wagon.add(deck);
+
+      // Removable habitat / reactor cargo module seated on the wagon deck.
+      const cargo = new THREE.Group();
+      const crate = new THREE.Mesh(
+        new THREE.BoxGeometry(3.6, 2.1, 8.8),
+        new THREE.MeshStandardMaterial({ color: PALETTE.steel, metalness: 0.58, roughness: 0.62 }),
+      );
+      crate.position.y = 4.55;
+      cargo.add(crate);
+      const band = new THREE.Mesh(
+        new THREE.BoxGeometry(3.68, 0.14, 8.86),
+        new THREE.MeshBasicMaterial({ color: PALETTE.amber, toneMapped: false }),
+      );
+      band.position.y = 5.1;
+      cargo.add(band);
+      cargo.visible = false;
+      wagon.add(cargo);
+      this.cargoMeshes.push(cargo);
+
       wagon.visible = i < this.wagonCount;
       this.segments.push({ position: new THREE.Vector3(), heading: 0, length: 12, mesh: wagon });
       this.object3D.add(wagon);
@@ -213,7 +237,7 @@ export class LandTrain extends VehicleBase {
         }),
       );
       marker.position.copy(z.position);
-      marker.position.y += 0.6;
+      marker.position.y = this.env.field.elevation(z.position.x, z.position.z) + 0.6;
       this.zoneGroup.add(marker);
       this.zones.push({ ...z, marker, delivered: 0 });
     }
@@ -435,11 +459,18 @@ export class LandTrain extends VehicleBase {
     lead.mesh.rotation.x = -this.gradeAt(lead.position, lead.heading);
     lead.mesh.rotation.z = damp(lead.mesh.rotation.z, -this.steerAngle * 0.12, 4, Math.max(dt, 1 / 60));
 
-    for (const b of this.bogies) {
+    for (let i = 0; i < this.bogies.length; i++) {
+      const b = this.bogies[i];
+      const host = this.segments[Math.min(i, this.segments.length - 1)];
       for (const w of b.wheelMeshes) w.rotation.x -= spin;
-      b.mesh.rotation.y = this.steerAngle * 0.25;
       b.travel = damp(b.travel, clamp01(1 - b.stress * 0.9), 6, Math.max(dt, 1 / 60));
-      b.mesh.position.y = -0.55 + b.travel * 0.5;
+      const gy = this.env.field.elevation(host.position.x, host.position.z);
+      b.mesh.position.set(host.position.x, gy - 0.55 + b.travel * 0.5, host.position.z);
+      b.mesh.rotation.y = host.heading + (i === 0 ? this.steerAngle * 0.25 : 0);
+      b.mesh.visible = host.mesh.visible;
+    }
+    for (let i = 0; i < this.cargoMeshes.length; i++) {
+      this.cargoMeshes[i].visible = i < this.cargoModules;
     }
   }
 
@@ -515,6 +546,7 @@ export class LandTrain extends VehicleBase {
         this.env.impact(0.45, 0.3);
         this.env.blip(pos.x, y, pos.z, 640, 0.2);
         this.fireObjective('deliver');
+        this.fireObjective('clear');
       }
       return;
     }

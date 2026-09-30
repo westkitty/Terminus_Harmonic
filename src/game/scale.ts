@@ -277,6 +277,11 @@ readonly scenes = {
     cam.position.copy(this.sectorCamPos);
     cam.lookAt(this.sectorCamLook);
     cam.updateMatrixWorld();
+
+    const orbitCam = this.cameras.ORBIT;
+    orbitCam.position.copy(this.sectorCamPos);
+    orbitCam.lookAt(this.sectorCamLook);
+    orbitCam.updateMatrixWorld();
   }
 
   /** Hard-set the sector camera (used when switching vehicles or teleporting). */
